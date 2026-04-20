@@ -2,6 +2,7 @@ import ClientInfo from "./clientInfo"
 import config from '../config'
 import SocketServer from "./socket"
 import SongInfo from "./web-shared/songInfo"
+import { isSpotifyContextUri, normalizeSpotifyUri } from "./spotifyUri"
 
 export type ContextTrack = {
   uri: string;
@@ -13,6 +14,7 @@ export default class Player {
   public trackUri = ""
   public paused = true
   public loadingTrack: NodeJS.Timeout | null = null
+  public queueAdvanceTimer: NodeJS.Timeout | null = null
   public milliseconds = 0
   public locked = false
   public millisecondsLastUpdate = Date.now()
@@ -45,6 +47,7 @@ export default class Player {
       this.millisecondsLastUpdate = Date.now()
       this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds], exceptSocketId)
       this.updateSongInfo()
+      this.scheduleQueueAdvance()
       this.loadAtMilliseconds = 0;
       return true
     }
@@ -62,6 +65,7 @@ export default class Player {
       this.trackUri = trackUri
       this.songInfo.trackUri = trackUri
       this.socketServer.emitToListeners("changeSong", [trackUri], exceptSocketId)
+      this.clearQueueAdvanceTimer()
       this.loadingTrack = setTimeout(() => {
         console.log("Timed out for loading track!")
         this.trackLoaded()
@@ -73,9 +77,94 @@ export default class Player {
     return this.queue;
   }
 
+  hasHost() {
+    return this.socketServer.getHost() !== null
+  }
+
+  isHostlessQueueMode() {
+    return !this.hasHost() && !this.locked
+  }
+
+  isPlaybackController(info?: ClientInfo) {
+    const leader = this.socketServer.getPlaybackLeader()
+    return !!info && !!leader && leader.socket.id === info.socket.id
+  }
+
+  clearQueueAdvanceTimer() {
+    if (this.queueAdvanceTimer) {
+      clearTimeout(this.queueAdvanceTimer)
+      this.queueAdvanceTimer = null
+    }
+  }
+
+  scheduleQueueAdvance() {
+    this.clearQueueAdvanceTimer()
+
+    if (!this.isHostlessQueueMode() || this.paused || !this.trackUri) {
+      return
+    }
+
+    const durationMs = this.songInfo.durationMs || 0
+    if (durationMs <= 0) {
+      return
+    }
+
+    const remainingMs = Math.max(durationMs - this.getTrackProgress(), 0)
+    this.queueAdvanceTimer = setTimeout(() => {
+      this.queueAdvanceTimer = null
+
+      if (!this.isHostlessQueueMode()) {
+        return
+      }
+
+      if (!this.playNextQueuedTrack()) {
+        const fallbackUri = normalizeSpotifyUri(config.fallbackPlaylistUri)
+        if (fallbackUri) {
+          this.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
+          return
+        }
+
+        this.paused = true
+        this.milliseconds = durationMs
+        this.millisecondsLastUpdate = Date.now()
+        this.updateSongInfo()
+      }
+    }, remainingMs + 750)
+  }
+
+  playNextQueuedTrack() {
+    if (!this.isHostlessQueueMode() || this.queue.length === 0) {
+      return false
+    }
+
+    const nextTrack = this.queue.shift()
+    if (!nextTrack) {
+      return false
+    }
+
+    const nextUri = normalizeSpotifyUri(nextTrack.uri)
+    this.socketServer.emitToListeners('removeFromQueue', [[nextTrack]])
+
+    if (Player.isTrackListenable(nextUri)) {
+      this.changeSong(nextUri)
+      return true
+    }
+
+    if (isSpotifyContextUri(nextUri)) {
+      this.socketServer.emitToPlaybackLeader('adminPlayFallback', nextUri)
+      return true
+    }
+
+    return true
+  }
+
   addToQueue(tracks: ContextTrack[]) {
     this.queue.push(...tracks);
     this.socketServer.emitToListeners('addToQueue', [[...tracks]]);
+
+    if (this.isHostlessQueueMode() && !this.trackUri && this.socketServer.getListeners().length > 0) {
+      this.playNextQueuedTrack()
+    }
   }
 
   removeFromQueue(tracks: ContextTrack[]) {
@@ -94,6 +183,7 @@ export default class Player {
   clearQueue() {
     this.queue = [];
     this.socketServer.emitToListeners('clearQueue');
+    this.clearQueueAdvanceTimer()
   }
 
   shiftQueueTrack(trackUri: string) {
@@ -122,11 +212,11 @@ export default class Player {
     Requests
   */
   requestUpdateSong(info: ClientInfo | undefined, pause: boolean, milliseconds: number) {
-    if (info === undefined || info?.isHost) {
+    if (info === undefined || this.isPlaybackController(info)) {
       if (this.locked) {
         info?.socket.emit("bottomMessage", "Listen together is currently locked!", true)
       } else {
-        this.updateSong(pause, milliseconds, info?.isHost ? info.socket.id : undefined)
+        this.updateSong(pause, milliseconds, info?.socket.id)
       }
     }
   }
@@ -135,11 +225,13 @@ export default class Player {
     Updates
   */
   listenerLoadingSong(info: ClientInfo, newTrackUri: string) {
-    if (info.isHost && newTrackUri !== this.trackUri) {
+    if (this.isPlaybackController(info) && newTrackUri !== this.trackUri) {
       if (this.locked) {
         info.socket.emit("bottomMessage", "Listen together is currently locked!", true)
       } else {
-        this.shiftQueueTrack(newTrackUri)
+        if (info.isHost) {
+          this.shiftQueueTrack(newTrackUri)
+        }
         this.changeSong(newTrackUri, info.socket.id)
       }
     }
@@ -166,7 +258,7 @@ export default class Player {
     }
 
     info.trackUri = newTrackUri
-    if (info.isHost) {
+    if (this.isPlaybackController(info)) {
       this.updateSongInfo(normalizedSongInfo)
     }
     this.checkListenerHasAD()
@@ -236,6 +328,7 @@ export default class Player {
       this.locked = lock
       if (this.locked) {
         // this.updateSong(true, 0)
+        this.clearQueueAdvanceTimer()
       } else {
         this.changeSong(this.socketServer.getHost()?.trackUri || this.trackUri)
       }
@@ -252,6 +345,7 @@ export default class Player {
   }
 
   onNoListeners() {
+    this.clearQueueAdvanceTimer()
     this.trackUri = ""
     this.paused = true
     this.milliseconds = 0
@@ -287,5 +381,6 @@ export default class Player {
     this.songInfo.trackUri = this.trackUri
     this.songInfo.paused = this.paused
     this.socketServer.emitToNonListeners("songInfo", this.songInfo)
+    this.scheduleQueueAdvance()
   }
 }

@@ -4,6 +4,7 @@ import http from 'http'
 import { Server } from 'socket.io'
 import path from 'path'
 import dotenv from 'dotenv'
+import { normalizeSpotifyUri } from './spotifyUri'
 
 express()
 
@@ -111,7 +112,7 @@ app.prepare().then(async () => {
         trackUri: info.trackUri
       })),
       queue: backend.player.getQueue(),
-      fallbackPlaylistUri: config.fallbackPlaylistUri || null
+      fallbackPlaylistUri: normalizeSpotifyUri(config.fallbackPlaylistUri) || null
     }
   }
 
@@ -148,8 +149,14 @@ app.prepare().then(async () => {
   })
 
   server.post('/api/admin/queue', requireAdminApiKey, (req, res) => {
-    const tracks = Array.isArray(req.body?.tracks) ? req.body.tracks : []
+    const tracks = Array.isArray(req.body?.tracks)
+      ? req.body.tracks.map((track: any) => ({
+          ...track,
+          uri: normalizeSpotifyUri(track?.uri),
+        }))
+      : []
     const playNow = req.body?.playNow === true
+    const hasHost = backend.socketServer.getHost() !== null
 
     if (tracks.length === 0) {
       res.status(400).json({ error: 'Body must include a non-empty tracks array.' })
@@ -158,16 +165,13 @@ app.prepare().then(async () => {
 
     backend.player.addToQueue(tracks)
 
-    if (playNow) {
-      if (backend.player.trackUri) {
-        backend.socketServer.emitToHost('adminSkipToNext')
-      } else {
-        backend.socketServer.emitToHost('adminPlayTrack', tracks[0].uri)
-      }
+    if (playNow && !hasHost) {
+      backend.player.playNextQueuedTrack()
     }
 
     res.json({
       ok: true,
+      hostControlled: hasHost,
       queueCount: backend.player.getQueue().length,
       queue: backend.player.getQueue()
     })
@@ -179,13 +183,15 @@ app.prepare().then(async () => {
   })
 
   server.post('/api/admin/fallback/play', requireAdminApiKey, (_req, res) => {
-    if (!config.fallbackPlaylistUri) {
+    const fallbackUri = normalizeSpotifyUri(config.fallbackPlaylistUri)
+
+    if (!fallbackUri) {
       res.status(400).json({ error: 'FALLBACK_PLAYLIST_URI is not configured.' })
       return
     }
 
-    backend.socketServer.emitToHost('adminPlayFallback', config.fallbackPlaylistUri)
-    res.json({ ok: true, fallbackPlaylistUri: config.fallbackPlaylistUri })
+    backend.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
+    res.json({ ok: true, fallbackPlaylistUri: fallbackUri })
   })
 
   server.all('*', (req, res) => {

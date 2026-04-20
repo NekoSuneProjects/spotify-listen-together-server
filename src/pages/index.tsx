@@ -2,6 +2,7 @@ import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { io } from 'socket.io-client';
 import config from '../../config';
 
 type Listener = {
@@ -68,9 +69,25 @@ function formatClock(value?: string | null) {
 
 const Index: NextPage = () => {
   const [state, setState] = useState<ApiState | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
-    let cancelled = false;
+    const socket = io();
+    const rebuildSong = (partialSong: Partial<ApiState['song']>) => {
+      setState((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return {
+          ...current,
+          song: {
+            ...current.song,
+            ...partialSong,
+          },
+        };
+      });
+    };
 
     const loadState = async () => {
       try {
@@ -80,18 +97,73 @@ const Index: NextPage = () => {
         }
 
         const nextState = (await response.json()) as ApiState;
-        if (!cancelled) {
-          setState(nextState);
-        }
+        setState(nextState);
       } catch {}
     };
 
-    loadState();
-    const interval = setInterval(loadState, 1000);
+    socket.on('connect', () => {
+      socket.emit('requestSongInfo');
+      socket.emit('requestListeners');
+      socket.emit('requestQueue');
+      loadState();
+    });
 
+    socket.on('songInfo', (songInfo: Partial<ApiState['song']>) => {
+      rebuildSong(songInfo);
+    });
+
+    socket.on('listeners', (listeners: Listener[]) => {
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              listeners,
+              host: listeners.find((listener) => listener.isHost)
+                ? {
+                    name: listeners.find((listener) => listener.isHost)!.name,
+                    trackUri:
+                      listeners.find((listener) => listener.isHost)!.trackUri,
+                  }
+                : null,
+            }
+          : current,
+      );
+    });
+
+    socket.on('queueUpdate', (queue: QueueTrack[]) => {
+      setState((current) => (current ? { ...current, queue } : current));
+    });
+
+    socket.on('addToQueue', (items: QueueTrack[]) => {
+      setState((current) =>
+        current ? { ...current, queue: [...current.queue, ...items] } : current,
+      );
+    });
+
+    socket.on('removeFromQueue', (items: QueueTrack[]) => {
+      const removedUris = new Set(items.map((item) => item.uri));
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              queue: current.queue.filter((item) => !removedUris.has(item.uri)),
+            }
+          : current,
+      );
+    });
+
+    socket.on('clearQueue', () => {
+      setState((current) => (current ? { ...current, queue: [] } : current));
+    });
+
+    const clock = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    loadState();
     return () => {
-      cancelled = true;
-      clearInterval(interval);
+      clearInterval(clock);
+      socket.disconnect();
     };
   }, []);
 
@@ -110,9 +182,15 @@ const Index: NextPage = () => {
   const listeners = state?.listeners || [];
   const queue = state?.queue || [];
   const hasActiveSong = Boolean(song?.trackUri || song?.name);
+  const liveProgressMs =
+    song && !song.paused && song.durationMs > 0 && song.endsAt
+      ? Math.max(song.durationMs - Math.max(new Date(song.endsAt).getTime() - nowMs, 0), song.progressMs)
+      : song?.progressMs || 0;
+  const liveRemainingMs =
+    song && song.durationMs > 0 ? Math.max(song.durationMs - liveProgressMs, 0) : 0;
   const progressPercent =
     song && song.durationMs > 0
-      ? Math.min((song.progressMs / song.durationMs) * 100, 100)
+      ? Math.min((liveProgressMs / song.durationMs) * 100, 100)
       : 0;
 
   return (
@@ -208,7 +286,7 @@ const Index: NextPage = () => {
 
                   <div className="mt-10">
                     <div className="mb-3 flex items-center justify-between text-sm text-white/65">
-                      <span>{formatDuration(song?.progressMs)}</span>
+                      <span>{formatDuration(liveProgressMs)}</span>
                       <span>{song?.durationMs ? formatDuration(song.durationMs) : '--:--'}</span>
                     </div>
                     <div className="h-3 overflow-hidden rounded-full bg-white/10">
@@ -223,7 +301,7 @@ const Index: NextPage = () => {
                           Current Time
                         </div>
                         <div className="mt-1 font-semibold text-white">
-                          {formatDuration(song?.progressMs)}
+                          {formatDuration(liveProgressMs)}
                         </div>
                       </div>
                       <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
@@ -231,7 +309,7 @@ const Index: NextPage = () => {
                           Remaining
                         </div>
                         <div className="mt-1 font-semibold text-white">
-                          {song?.durationMs ? formatDuration(song?.remainingMs) : 'Syncing'}
+                          {song?.durationMs ? formatDuration(liveRemainingMs) : 'Syncing'}
                         </div>
                       </div>
                       <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
@@ -371,29 +449,6 @@ const Index: NextPage = () => {
               </div>
             </div>
 
-            <div className="rounded-[2rem] border border-white/10 bg-gradient-to-br from-spotify-500/15 via-white/5 to-transparent p-6 backdrop-blur">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-end justify-center gap-1 rounded-2xl bg-black/30 p-2">
-                  <span className="h-4 w-1.5 animate-pulsebar rounded-full bg-spotify-300 [animation-delay:-0.2s]" />
-                  <span className="h-6 w-1.5 animate-pulsebar rounded-full bg-spotify-400 [animation-delay:-0.1s]" />
-                  <span className="h-8 w-1.5 animate-pulsebar rounded-full bg-spotify-500" />
-                </div>
-                <div>
-                  <div className="text-sm uppercase tracking-[0.24em] text-white/45">
-                    Bot Ready
-                  </div>
-                  <div className="mt-1 text-lg font-black text-white">
-                    Admin API Enabled
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 space-y-3 text-sm text-white/70">
-                <p>Use `POST /api/admin/queue` with your API key to add Twitch song requests.</p>
-                <p>Set `playNow: true` to kick playback into the first queued track.</p>
-                <p>Set `FALLBACK_PLAYLIST_URI` if you want a server-side fallback play command.</p>
-              </div>
-            </div>
           </aside>
         </section>
 

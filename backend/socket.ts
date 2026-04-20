@@ -19,6 +19,10 @@ export default class SocketServer {
     return [...this.clientsInfo.values()].find((info) => info.isHost) || null
   }
 
+  getPlaybackLeader(): ClientInfo | null {
+    return this.getHost() || this.getListeners()[0] || null
+  }
+
   emitToNonListeners(ev: string, ...args: any) {
     [...this.clientsInfo.values()].filter((info: ClientInfo) => !info.loggedIn).forEach(info => {
       info.socket.emit(ev, ...args)
@@ -51,6 +55,10 @@ export default class SocketServer {
     this.getHost()?.socket.emit(ev, ...args)
   }
 
+  emitToPlaybackLeader(ev: string, ...args: any[]) {
+    this.getPlaybackLeader()?.socket.emit(ev, ...args)
+  }
+
   sendListeners(socket?: Socket) {
     if (!socket) 
       socket = <any>this.io
@@ -66,6 +74,14 @@ export default class SocketServer {
     info.isHost = isHost
     info.socket.emit("isHost", isHost)
     this.sendListeners()
+    this.sendPlaybackLeader()
+  }
+
+  sendPlaybackLeader() {
+    const leader = this.getPlaybackLeader()
+    this.getListeners().forEach((info) => {
+      info.socket.emit("playbackLeader", leader?.socket.id === info.socket.id)
+    })
   }
 
   addEvents(player: Player) {
@@ -96,6 +112,7 @@ export default class SocketServer {
           info.loggedIn = true;
           this.player?.listenerLoggedIn(info)
           this.sendListeners()
+          this.sendPlaybackLeader()
           console.log(`Sending queue to ${name}`)
           socket.emit('queueUpdate', this.player?.getQueue())
         } else {
@@ -148,6 +165,14 @@ export default class SocketServer {
       })
 
       socket.on("requestSong", (trackUri: string, trackName: string, metadata?: any) => {
+        const host = this.getHost()
+
+        if (host) {
+          host.socket.emit("songRequested", trackUri, trackName, info.name)
+          socket.emit("bottomMessage", `Sent "${trackName}" to the host.`, true)
+          return
+        }
+
         this.player?.addToQueue([{
           uri: trackUri,
           metadata: {
@@ -160,11 +185,6 @@ export default class SocketServer {
         }])
 
         socket.emit("bottomMessage", `Queued "${trackName}".`, true)
-        this.getHost()?.socket.emit(
-          "bottomMessage",
-          `${info.name} added "${trackName}" to the queue.`,
-          true,
-        )
       })
 
       // Queue events
@@ -188,6 +208,7 @@ export default class SocketServer {
         this.clientsInfo.delete(socket.id)
         this.player?.listenerLoggedOut()
         this.sendListeners()
+        this.sendPlaybackLeader()
         if (this.getListeners().length === 0) {
           this.player?.onNoListeners()
         }

@@ -83,20 +83,14 @@ const Index: NextPage = () => {
   const [state, setState] = useState<ApiState | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
   const [lastTrackUri, setLastTrackUri] = useState<string | null>(null);
-  const [timeOffset, setTimeOffset] = useState(0); // Track offset between server and client time
+  const [fetchTime, setFetchTime] = useState(Date.now()); // Track when we fetched the state
 
   // Separate effect to track song changes - runs after state updates
   useEffect(() => {
     if (state?.song?.trackUri && state.song.trackUri !== lastTrackUri) {
       setLastTrackUri(state.song.trackUri);
     }
-    
-    // Update time offset when we get new state from server
-    if (state?.serverTime) {
-      const serverTime = new Date(state.serverTime).getTime();
-      setTimeOffset(serverTime - Date.now());
-    }
-  }, [state?.song?.trackUri, state?.serverTime]);
+  }, [state?.song?.trackUri]);
 
   useEffect(() => {
     const socket = io();
@@ -124,6 +118,7 @@ const Index: NextPage = () => {
         }
 
         const nextState = (await response.json()) as ApiState;
+        setFetchTime(Date.now()); // Record fetch time right after getting response
         setState(nextState);
       } catch {}
     };
@@ -140,39 +135,27 @@ const Index: NextPage = () => {
     });
 
     socket.on('listeners', (listeners: Listener[]) => {
-      setState((current) => {
-        if (!current) return current;
-        
-        // Merge new listener data with existing data to preserve fields like latency
-        const mergedListeners = listeners.map((newListener) => {
-          const existingListener = current.listeners.find(
-            (l) => l.name === newListener.name && l.isHost === newListener.isHost
-          );
-          // Merge: new data overrides, but preserve existing fields if not in new data
-          return {
-            ...existingListener,
-            ...newListener,
-          };
-        });
-
-        return {
-          ...current,
-          listeners: mergedListeners,
-          host: mergedListeners.find((listener) => listener.isHost)
-            ? {
-                name: mergedListeners.find((listener) => listener.isHost)!.name,
-                trackUri:
-                  mergedListeners.find((listener) => listener.isHost)!.trackUri || '',
-              }
-            : null,
-        };
-      });
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              listeners,
+              host: listeners.find((listener) => listener.isHost)
+                ? {
+                    name: listeners.find((listener) => listener.isHost)!.name,
+                    trackUri:
+                      listeners.find((listener) => listener.isHost)!.trackUri || '',
+                  }
+                : null,
+            }
+          : current,
+      );
     });
 
-    // Request fresh listener data periodically to update latency
+    // Request fresh listener data periodically from API to get real latency
     const listenerRefreshInterval = setInterval(() => {
-      socket.emit('requestListeners');
-    }, 5000); // Request every 5 seconds
+      loadState();
+    }, 3000); // Fetch every 3 seconds
 
     socket.on('queueUpdate', (queue: QueueTrack[]) => {
       setState((current) => (current ? { ...current, queue } : current));
@@ -240,12 +223,13 @@ const Index: NextPage = () => {
       liveProgressMs = 0;
       liveRemainingMs = song.durationMs;
     } else if (!song.paused && song.endsAt) {
-      // Use server-adjusted time for accurate calculations
-      const serverNowMs = nowMs + timeOffset;
-      const endsAtMs = new Date(song.endsAt).getTime();
-      const timeUntilEnd = Math.max(endsAtMs - serverNowMs, 0);
-      liveProgressMs = Math.max(song.durationMs - timeUntilEnd, 0);
-      liveRemainingMs = Math.max(timeUntilEnd, 0);
+      // Use progressMs as baseline and add elapsed time since fetch
+      const elapsedSinceFetch = Math.max(nowMs - fetchTime, 0);
+      liveProgressMs = Math.min(
+        (song.progressMs || 0) + elapsedSinceFetch,
+        song.durationMs
+      );
+      liveRemainingMs = Math.max(song.durationMs - liveProgressMs, 0);
     } else {
       // Song is paused or no endsAt, use static values from API
       liveProgressMs = song.progressMs || 0;
@@ -448,7 +432,6 @@ const Index: NextPage = () => {
                   </div>
                 ) : (
                   listeners.map((listener) => {
-                    console.log(listener)
                     const latencyInfo = formatLatency(listener.latency);
                     return (
                       <div

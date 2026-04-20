@@ -149,7 +149,7 @@ const Index: NextPage = () => {
                 ? {
                     name: listeners.find((listener) => listener.isHost)!.name,
                     trackUri:
-                      listeners.find((listener) => listener.isHost)!.trackUri,
+                      listeners.find((listener) => listener.isHost)!.trackUri || '',
                   }
                 : null,
             }

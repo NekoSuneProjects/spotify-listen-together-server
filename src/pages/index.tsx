@@ -140,21 +140,33 @@ const Index: NextPage = () => {
     });
 
     socket.on('listeners', (listeners: Listener[]) => {
-      setState((current) =>
-        current
-          ? {
-              ...current,
-              listeners,
-              host: listeners.find((listener) => listener.isHost)
-                ? {
-                    name: listeners.find((listener) => listener.isHost)!.name,
-                    trackUri:
-                      listeners.find((listener) => listener.isHost)!.trackUri || '',
-                  }
-                : null,
-            }
-          : current,
-      );
+      setState((current) => {
+        if (!current) return current;
+        
+        // Merge new listener data with existing data to preserve fields like latency
+        const mergedListeners = listeners.map((newListener) => {
+          const existingListener = current.listeners.find(
+            (l) => l.name === newListener.name && l.isHost === newListener.isHost
+          );
+          // Merge: new data overrides, but preserve existing fields if not in new data
+          return {
+            ...existingListener,
+            ...newListener,
+          };
+        });
+
+        return {
+          ...current,
+          listeners: mergedListeners,
+          host: mergedListeners.find((listener) => listener.isHost)
+            ? {
+                name: mergedListeners.find((listener) => listener.isHost)!.name,
+                trackUri:
+                  mergedListeners.find((listener) => listener.isHost)!.trackUri || '',
+              }
+            : null,
+        };
+      });
     });
 
     socket.on('queueUpdate', (queue: QueueTrack[]) => {
@@ -430,7 +442,6 @@ const Index: NextPage = () => {
                   </div>
                 ) : (
                   listeners.map((listener) => {
-                    console.log(listener)
                     const latencyInfo = formatLatency(listener.latency);
                     return (
                       <div

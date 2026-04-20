@@ -139,8 +139,8 @@ export default class SocketServer {
         this.player?.listenerLoadingSong(info, trackUri)
       })
 
-      socket.on("changedSong", (trackUri: string, songInfo?: any) => {
-        this.player?.listenerChangedSong(info, trackUri, songInfo)
+      socket.on("changedSong", (trackUri: string, songInfoOrName?: any, songImage?: string) => {
+        this.player?.listenerChangedSong(info, trackUri, songInfoOrName, songImage)
       })
 
       socket.on("requestListeners", () => {

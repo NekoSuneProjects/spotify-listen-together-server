@@ -145,13 +145,29 @@ export default class Player {
     }
   }
 
-  listenerChangedSong(info: ClientInfo, newTrackUri: string, songInfo?: Partial<SongInfo>) {
+  listenerChangedSong(
+    info: ClientInfo,
+    newTrackUri: string,
+    songInfoOrName?: Partial<SongInfo> | string,
+    songImage?: string,
+  ) {
     if (newTrackUri === "") {
       return;
     }
+
+    let normalizedSongInfo: Partial<SongInfo> | undefined
+    if (typeof songInfoOrName === "string") {
+      normalizedSongInfo = {
+        name: songInfoOrName,
+        image: songImage,
+      }
+    } else {
+      normalizedSongInfo = songInfoOrName
+    }
+
     info.trackUri = newTrackUri
     if (info.isHost) {
-      this.updateSongInfo(songInfo)
+      this.updateSongInfo(normalizedSongInfo)
     }
     this.checkListenerHasAD()
     if (!this.locked) {

@@ -8,9 +8,10 @@ import config from '../../config';
 type Listener = {
   name: string;
   isHost: boolean;
-  loggedIn: boolean;
-  latency: number;
-  trackUri: string;
+  loggedIn?: boolean;
+  latency?: number;
+  trackUri?: string;
+  watchingAD?: boolean;
 };
 
 type QueueTrack = {
@@ -82,13 +83,20 @@ const Index: NextPage = () => {
   const [state, setState] = useState<ApiState | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
   const [lastTrackUri, setLastTrackUri] = useState<string | null>(null);
+  const [timeOffset, setTimeOffset] = useState(0); // Track offset between server and client time
 
   // Separate effect to track song changes - runs after state updates
   useEffect(() => {
     if (state?.song?.trackUri && state.song.trackUri !== lastTrackUri) {
       setLastTrackUri(state.song.trackUri);
     }
-  }, [state?.song?.trackUri]);
+    
+    // Update time offset when we get new state from server
+    if (state?.serverTime) {
+      const serverTime = new Date(state.serverTime).getTime();
+      setTimeOffset(serverTime - Date.now());
+    }
+  }, [state?.song?.trackUri, state?.serverTime]);
 
   useEffect(() => {
     const socket = io();
@@ -212,14 +220,18 @@ const Index: NextPage = () => {
     // If song just changed, start from 0
     if (isSongChanged) {
       liveProgressMs = 0;
+      liveRemainingMs = song.durationMs;
     } else if (!song.paused && song.endsAt) {
-      // Calculate current progress based on endsAt time
+      // Use server-adjusted time for accurate calculations
+      const serverNowMs = nowMs + timeOffset;
       const endsAtMs = new Date(song.endsAt).getTime();
-      const timeUntilEnd = Math.max(endsAtMs - nowMs, 0);
+      const timeUntilEnd = Math.max(endsAtMs - serverNowMs, 0);
       liveProgressMs = Math.max(song.durationMs - timeUntilEnd, 0);
+      liveRemainingMs = Math.max(timeUntilEnd, 0);
     } else {
-      // Song is paused or no endsAt, use static progress
+      // Song is paused or no endsAt, use static values from API
       liveProgressMs = song.progressMs || 0;
+      liveRemainingMs = song.remainingMs || 0;
     }
     
     // Ensure we don't exceed duration
@@ -418,11 +430,10 @@ const Index: NextPage = () => {
                   </div>
                 ) : (
                   listeners.map((listener) => {
-                    console.log(listener);
                     const latencyInfo = formatLatency(listener.latency);
                     return (
                       <div
-                        key={`${listener.name}-${listener.trackUri}-${listener.latency}`}
+                        key={`${listener.name}-${listener.isHost}`}
                         className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3"
                       >
                         <div>

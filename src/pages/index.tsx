@@ -50,7 +50,11 @@ type ApiState = {
 };
 
 function formatDuration(ms?: number) {
-  const totalSeconds = Math.max(Math.floor((ms || 0) / 1000), 0);
+  const validMs = Math.max(Math.floor((ms || 0) / 1000), 0);
+  if (!Number.isFinite(validMs)) {
+    return '--:--';
+  }
+  const totalSeconds = validMs;
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -65,6 +69,13 @@ function formatClock(value?: string | null) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+function formatLatency(latency: number): string {
+  if (!Number.isFinite(latency)) {
+    return '--';
+  }
+  return Math.round(latency).toString();
 }
 
 const Index: NextPage = () => {
@@ -170,8 +181,8 @@ const Index: NextPage = () => {
   const openSpotify = () => {
     window.open(
       `spotify:listentogether:${encodeURIComponent(
-        typeof location !== 'undefined'
-          ? location.protocol + '//' + location.host
+        typeof window !== 'undefined' && window.location
+          ? window.location.protocol + '//' + window.location.host
           : '',
       )}`,
       '_self',
@@ -182,12 +193,24 @@ const Index: NextPage = () => {
   const listeners = state?.listeners || [];
   const queue = state?.queue || [];
   const hasActiveSong = Boolean(song?.trackUri || song?.name);
-  const liveProgressMs =
-    song && !song.paused && song.durationMs > 0 && song.endsAt
-      ? Math.max(song.durationMs - Math.max(new Date(song.endsAt).getTime() - nowMs, 0), song.progressMs)
-      : song?.progressMs || 0;
-  const liveRemainingMs =
-    song && song.durationMs > 0 ? Math.max(song.durationMs - liveProgressMs, 0) : 0;
+  
+  let liveProgressMs = 0;
+  let liveRemainingMs = 0;
+
+  if (song && song.durationMs > 0) {
+    if (!song.paused && song.endsAt) {
+      const endsAtMs = new Date(song.endsAt).getTime();
+      const timeUntilEnd = Math.max(endsAtMs - nowMs, 0);
+      liveProgressMs = Math.max(song.durationMs - timeUntilEnd, song.progressMs);
+    } else {
+      liveProgressMs = song.progressMs || 0;
+    }
+    
+    // Ensure we don't exceed duration
+    liveProgressMs = Math.min(liveProgressMs, song.durationMs);
+    liveRemainingMs = Math.max(song.durationMs - liveProgressMs, 0);
+  }
+
   const progressPercent =
     song && song.durationMs > 0
       ? Math.min((liveProgressMs / song.durationMs) * 100, 100)
@@ -393,7 +416,7 @@ const Index: NextPage = () => {
                       </div>
                       <div className="text-right">
                         <div className="text-sm font-semibold text-spotify-200">
-                          {Math.round(listener.latency)}ms
+                          {formatLatency(listener.latency)}ms
                         </div>
                         <div className="mt-1 text-xs text-white/40">
                           Sync latency

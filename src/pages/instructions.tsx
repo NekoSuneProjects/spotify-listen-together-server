@@ -1,6 +1,7 @@
 import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import config from '../../config';
 
 function selectCodeBlock(target: HTMLDivElement) {
@@ -59,12 +60,18 @@ function CopyCommandCard(props: {
 }
 
 const Instructions: NextPage = () => {
+  const [serverUrl, setServerUrl] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setServerUrl(`${window.location.protocol}//${window.location.host}`);
+    }
+  }, []);
+
   const repoURL = `https://raw.githubusercontent.com/NekoSuneProjects/spotify-listen-together/${config.clientRecommendedVersion}`;
   const listenTogetherURL = `${repoURL}/compiled/listenTogether.js`;
   const windowsInstallCMD = `iwr -useb https://raw.githubusercontent.com/spicetify/cli/main/install.ps1 | iex`;
   const unixInstallCMD = `curl -fsSL https://raw.githubusercontent.com/spicetify/cli/main/install.sh | sh`;
-  const serverUrl =
-    typeof location !== 'undefined' ? `${location.protocol}//${location.host}` : '';
 
   return (
     <main className="min-h-screen bg-hero-radial text-white">

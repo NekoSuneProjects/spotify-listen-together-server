@@ -147,8 +147,24 @@ export default class SocketServer {
         this.sendListeners(socket)
       })
 
-      socket.on("requestSong", (trackUri: string, trackName: string) => {
-        this.getHost()?.socket.emit("songRequested", trackUri, trackName, info.name)
+      socket.on("requestSong", (trackUri: string, trackName: string, metadata?: any) => {
+        this.player?.addToQueue([{
+          uri: trackUri,
+          metadata: {
+            title: trackName,
+            artist_name: metadata?.artist_name || metadata?.artistName || "",
+            album_title: metadata?.album_title || metadata?.albumName || "",
+            image_url: metadata?.image_url || metadata?.image || "",
+            requested_by: info.name,
+          }
+        }])
+
+        socket.emit("bottomMessage", `Queued "${trackName}".`, true)
+        this.getHost()?.socket.emit(
+          "bottomMessage",
+          `${info.name} added "${trackName}" to the queue.`,
+          true,
+        )
       })
 
       // Queue events

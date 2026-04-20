@@ -109,6 +109,7 @@ const Index: NextPage = () => {
   const song = state?.song;
   const listeners = state?.listeners || [];
   const queue = state?.queue || [];
+  const hasActiveSong = Boolean(song?.trackUri || song?.name);
   const progressPercent =
     song && song.durationMs > 0
       ? Math.min((song.progressMs / song.durationMs) * 100, 100)
@@ -194,17 +195,21 @@ const Index: NextPage = () => {
                       {song?.name || 'No active track'}
                     </h2>
                     <p className="mt-3 text-lg text-spotify-200">
-                      {song?.artistName || 'Waiting for the host to start playback'}
+                      {song?.artistName ||
+                        (hasActiveSong
+                          ? 'Artist metadata syncing...'
+                          : 'Waiting for the host to start playback')}
                     </p>
                     <p className="mt-2 text-sm text-white/45">
-                      {song?.albumName || 'No album context yet'}
+                      {song?.albumName ||
+                        (hasActiveSong ? 'Album metadata syncing...' : 'No album context yet')}
                     </p>
                   </div>
 
                   <div className="mt-10">
                     <div className="mb-3 flex items-center justify-between text-sm text-white/65">
                       <span>{formatDuration(song?.progressMs)}</span>
-                      <span>{formatDuration(song?.durationMs)}</span>
+                      <span>{song?.durationMs ? formatDuration(song.durationMs) : '--:--'}</span>
                     </div>
                     <div className="h-3 overflow-hidden rounded-full bg-white/10">
                       <div
@@ -226,7 +231,7 @@ const Index: NextPage = () => {
                           Remaining
                         </div>
                         <div className="mt-1 font-semibold text-white">
-                          {formatDuration(song?.remainingMs)}
+                          {song?.durationMs ? formatDuration(song?.remainingMs) : 'Syncing'}
                         </div>
                       </div>
                       <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
@@ -234,7 +239,7 @@ const Index: NextPage = () => {
                           Ends At
                         </div>
                         <div className="mt-1 font-semibold text-white">
-                          {formatClock(song?.endsAt)}
+                          {song?.endsAt ? formatClock(song.endsAt) : 'Syncing'}
                         </div>
                       </div>
                     </div>

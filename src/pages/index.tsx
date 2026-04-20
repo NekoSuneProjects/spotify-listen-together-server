@@ -71,16 +71,17 @@ function formatClock(value?: string | null) {
   }).format(new Date(value));
 }
 
-function formatLatency(latency: number): string {
-  if (!Number.isFinite(latency)) {
-    return '--';
+function formatLatency(latency: number | undefined): { value: string; isValid: boolean } {
+  if (latency === undefined || latency === null || !Number.isFinite(latency)) {
+    return { value: '--', isValid: false };
   }
-  return Math.round(latency).toString();
+  return { value: Math.round(latency).toString(), isValid: true };
 }
 
 const Index: NextPage = () => {
   const [state, setState] = useState<ApiState | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [lastTrackUri, setLastTrackUri] = useState<string | null>(null);
 
   useEffect(() => {
     const socket = io();
@@ -88,6 +89,12 @@ const Index: NextPage = () => {
       setState((current) => {
         if (!current) {
           return current;
+        }
+
+        // Detect song change and reset progress
+        const newTrackUri = partialSong.trackUri ?? current.song.trackUri;
+        if (newTrackUri && newTrackUri !== lastTrackUri) {
+          setLastTrackUri(newTrackUri);
         }
 
         return {
@@ -194,15 +201,23 @@ const Index: NextPage = () => {
   const queue = state?.queue || [];
   const hasActiveSong = Boolean(song?.trackUri || song?.name);
   
+  // Reset progress if song changed
+  const isSongChanged = song?.trackUri && song.trackUri !== lastTrackUri;
+  
   let liveProgressMs = 0;
   let liveRemainingMs = 0;
 
   if (song && song.durationMs > 0) {
-    if (!song.paused && song.endsAt) {
+    // If song just changed, start from 0
+    if (isSongChanged) {
+      liveProgressMs = 0;
+    } else if (!song.paused && song.endsAt) {
+      // Calculate current progress based on endsAt time
       const endsAtMs = new Date(song.endsAt).getTime();
       const timeUntilEnd = Math.max(endsAtMs - nowMs, 0);
-      liveProgressMs = Math.max(song.durationMs - timeUntilEnd, song.progressMs);
+      liveProgressMs = Math.max(song.durationMs - timeUntilEnd, 0);
     } else {
+      // Song is paused or no endsAt, use static progress
       liveProgressMs = song.progressMs || 0;
     }
     
@@ -401,29 +416,32 @@ const Index: NextPage = () => {
                     Nobody is connected yet.
                   </div>
                 ) : (
-                  listeners.map((listener) => (
-                    <div
-                      key={`${listener.name}-${listener.trackUri}-${listener.latency}`}
-                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3"
-                    >
-                      <div>
-                        <div className="font-semibold text-white">
-                          {listener.name}
+                  listeners.map((listener) => {
+                    const latencyInfo = formatLatency(listener.latency);
+                    return (
+                      <div
+                        key={`${listener.name}-${listener.trackUri}-${listener.latency}`}
+                        className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3"
+                      >
+                        <div>
+                          <div className="font-semibold text-white">
+                            {listener.name}
+                          </div>
+                          <div className="mt-1 text-xs uppercase tracking-[0.2em] text-white/40">
+                            {listener.isHost ? 'Host' : 'Listener'}
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs uppercase tracking-[0.2em] text-white/40">
-                          {listener.isHost ? 'Host' : 'Listener'}
+                        <div className="text-right">
+                          <div className="text-sm font-semibold text-spotify-200">
+                            {latencyInfo.value}{latencyInfo.isValid ? 'ms' : ''}
+                          </div>
+                          <div className="mt-1 text-xs text-white/40">
+                            Sync latency
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold text-spotify-200">
-                          {formatLatency(listener.latency)}ms
-                        </div>
-                        <div className="mt-1 text-xs text-white/40">
-                          Sync latency
-                        </div>
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

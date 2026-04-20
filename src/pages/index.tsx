@@ -169,6 +169,11 @@ const Index: NextPage = () => {
       });
     });
 
+    // Request fresh listener data periodically to update latency
+    const listenerRefreshInterval = setInterval(() => {
+      socket.emit('requestListeners');
+    }, 5000); // Request every 5 seconds
+
     socket.on('queueUpdate', (queue: QueueTrack[]) => {
       setState((current) => (current ? { ...current, queue } : current));
     });
@@ -202,6 +207,7 @@ const Index: NextPage = () => {
     loadState();
     return () => {
       clearInterval(clock);
+      clearInterval(listenerRefreshInterval);
       socket.disconnect();
     };
   }, []);

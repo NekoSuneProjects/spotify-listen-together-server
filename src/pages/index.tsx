@@ -83,18 +83,19 @@ const Index: NextPage = () => {
   const [nowMs, setNowMs] = useState(Date.now());
   const [lastTrackUri, setLastTrackUri] = useState<string | null>(null);
 
+  // Separate effect to track song changes - runs after state updates
+  useEffect(() => {
+    if (state?.song?.trackUri && state.song.trackUri !== lastTrackUri) {
+      setLastTrackUri(state.song.trackUri);
+    }
+  }, [state?.song?.trackUri]);
+
   useEffect(() => {
     const socket = io();
     const rebuildSong = (partialSong: Partial<ApiState['song']>) => {
       setState((current) => {
         if (!current) {
           return current;
-        }
-
-        // Detect song change and reset progress
-        const newTrackUri = partialSong.trackUri ?? current.song.trackUri;
-        if (newTrackUri && newTrackUri !== lastTrackUri) {
-          setLastTrackUri(newTrackUri);
         }
 
         return {
@@ -417,6 +418,7 @@ const Index: NextPage = () => {
                   </div>
                 ) : (
                   listeners.map((listener) => {
+                    console.log(listener);
                     const latencyInfo = formatLatency(listener.latency);
                     return (
                       <div

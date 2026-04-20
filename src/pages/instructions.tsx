@@ -6,9 +6,11 @@ import stylesInst from '../styles/Instructions.module.css'
 import spotStyles from '../styles/Spot.module.css'
 
 const Instructions: NextPage = () => {
-  const repoURL = `https://raw.githubusercontent.com/FlafyDev/spotify-listen-together/${config.clientRecommendedVersion}`
+  const repoURL = `https://raw.githubusercontent.com/NekoSuneProjects/spotify-listen-together/${config.clientRecommendedVersion}`
   const listenTogetherURL = `${repoURL}/compiled/listenTogether.js`
-  const windowsInstallCMD = `Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/CharlieS1103/spicetify-marketplace/master/install.ps1" | Invoke-Expression`
+  const windowsInstallCMD = `iwr -useb https://raw.githubusercontent.com/spicetify/cli/main/install.ps1 | iex`
+  const linuxInstallCMD = `curl -fsSL https://raw.githubusercontent.com/spicetify/cli/main/install.sh | sh`
+  const macInstallCMD = `curl -fsSL https://raw.githubusercontent.com/spicetify/cli/main/install.sh | sh`
 
   return (
     <div className="main">
@@ -38,14 +40,58 @@ const Instructions: NextPage = () => {
           {windowsInstallCMD}
         </div>
         <br /><br />
+        <div className={styles.header+" "+styles.left}>Automatic Linux install for Spotify Marketplace</div>
+        <br />
+        <div className={styles.text+" "+styles.left}>
+          1. Open Terminal<br/>
+          2. Paste:
+        </div>
+        <br />
+        <div className={spotStyles.box+" "+styles.code} onClick={(e) => {
+          navigator.clipboard.writeText(linuxInstallCMD)
+          
+          if (window.getSelection) {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(e.currentTarget);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          }
+        }}>
+          {linuxInstallCMD}
+        </div>
+        <br /><br />
+        <div className={styles.header+" "+styles.left}>Automatic macOS install for Spotify Marketplace</div>
+        <br />
+        <div className={styles.text+" "+styles.left}>
+          1. Open Terminal<br/>
+          2. Paste:
+        </div>
+        <br />
+        <div className={spotStyles.box+" "+styles.code} onClick={(e) => {
+          navigator.clipboard.writeText(macInstallCMD)
+          
+          if (window.getSelection) {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(e.currentTarget);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          }
+        }}>
+          {macInstallCMD}
+        </div>
+        <br /><br />
         <br /><br />
         <div className={styles.header+" "+styles.left}>OR: Manual install</div>
         <br />
         <div className={styles.text+" "+styles.left}>
-          1. Download and install <a href="https://spicetify.app/docs/getting-started/installation">Spicetify</a>.<br/><br/>
+          1. Download and install <a href="https://spicetify.app/docs/getting-started">Spicetify</a>.<br/><br/>
           2. Download <a href={listenTogetherURL}>listenTogether.js</a>.<br/><br/>
-          3. Paste &quot;listenTogether.js&quot; in &quot;.../.spicetify/Extensions&quot; (find the folder &quot;.spicetify&quot; by typing &quot;spicetify -c&quot; in Powershell).<br/><br/>
-          4. Run &quot;spicetify config extensions listenTogether.js&quot; and &quot;spicetify backup apply&quot;.<br/><br/>
+          3. Paste &quot;listenTogether.js&quot; into the Spicetify Extensions folder:<br/>
+          Windows: &quot;%appdata%\spicetify\Extensions\&quot;<br/>
+          Linux / macOS: &quot;~/.config/spicetify/Extensions/&quot;<br/><br/>
+          4. Run &quot;spicetify config extensions listenTogether.js&quot; and &quot;spicetify backup and spicetify apply&quot;.<br/><br/>
         </div>
         <br/><br/>
         <br/><br/>

@@ -7,8 +7,8 @@
     "start": "node dist/backend/index.js",
     "build:server": "tsc --project tsconfig.server.json",
     "build:next": "next build",
-    "build": "yarn run build:next && yarn run build:server",
-    "postinstall": "yarn run build",
+    "build": "npm run build:next && npm run build:server",
+    "postinstall": "npm run build",
     "web-only": "next dev"
   },
   "dependencies": {
@@ -16,6 +16,7 @@
     "@types/node": "^20.4.2",
     "@types/react": "18.2.15",
     "@types/semver": "^7.3.9",
+    "dotenv": "^16.6.1",
     "express": "^4.17.2",
     "next": "13.4.10",
     "react": "18.2.0",
@@ -25,9 +26,12 @@
     "socket.io-client": "^4.4.0"
   },
   "devDependencies": {
+    "autoprefixer": "^10.4.21",
     "eslint": "8.45.0",
     "eslint-config-next": "13.4.10",
     "nodemon": "^3.0.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
     "ts-node": "^10.4.0",
     "typescript": "^5.1.6"
   },

@@ -25,7 +25,7 @@ export default class SocketServer {
     })
   }
 
-  emitToListeners(ev: string, ...args: any) {
+  emitToListeners(ev: string, args: any[] = [], exceptSocketId?: string) {
     let listeners = this.getListeners()
     let maxLatency = 0
     let minLatency = config.maxDelay
@@ -35,12 +35,20 @@ export default class SocketServer {
       minLatency = Math.min(info.latency, minLatency)
     })
     listeners.forEach(info => {
+      if (exceptSocketId && info.socket.id === exceptSocketId) {
+        return
+      }
+
       let delay = ((maxLatency - minLatency) - (info.latency - minLatency))
       // console.log(`Sending to ${socketId} with ${delay} ms delay.`)
       setTimeout(() => {
         info.socket.emit(ev, ...args) 
       }, delay)
     });
+  }
+
+  emitToHost(ev: string, ...args: any[]) {
+    this.getHost()?.socket.emit(ev, ...args)
   }
 
   sendListeners(socket?: Socket) {
@@ -131,8 +139,8 @@ export default class SocketServer {
         this.player?.listenerLoadingSong(info, trackUri)
       })
 
-      socket.on("changedSong", (trackUri: string, songName?: string, songImage?: string) => {
-        this.player?.listenerChangedSong(info, trackUri, songName, songImage)
+      socket.on("changedSong", (trackUri: string, songInfo?: any) => {
+        this.player?.listenerChangedSong(info, trackUri, songInfo)
       })
 
       socket.on("requestListeners", () => {

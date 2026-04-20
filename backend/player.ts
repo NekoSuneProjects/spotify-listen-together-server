@@ -38,12 +38,12 @@ export default class Player {
   /*
     Commands
   */
-  updateSong(pause: boolean, milliseconds: number) {
+  updateSong(pause: boolean, milliseconds: number, exceptSocketId?: string) {
     if (this.loadingTrack === null && Player.isTrackListenable(this.trackUri)) {
       this.paused = pause
       this.milliseconds = milliseconds
       this.millisecondsLastUpdate = Date.now()
-      this.socketServer.emitToListeners("updateSong", this.paused, milliseconds)
+      this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds], exceptSocketId)
       this.updateSongInfo()
       this.loadAtMilliseconds = 0;
       return true
@@ -51,14 +51,17 @@ export default class Player {
     return false
   }
 
-  changeSong(trackUri: string) {
+  changeSong(trackUri: string, exceptSocketId?: string) {
     if (Player.isTrackListenable(trackUri)) {
       if (this.loadingTrack !== null)
         clearTimeout(this.loadingTrack)
       
       this.milliseconds = 0
+      this.millisecondsLastUpdate = Date.now()
+      this.paused = false
       this.trackUri = trackUri
-      this.socketServer.emitToListeners("changeSong", trackUri)
+      this.songInfo.trackUri = trackUri
+      this.socketServer.emitToListeners("changeSong", [trackUri], exceptSocketId)
       this.loadingTrack = setTimeout(() => {
         console.log("Timed out for loading track!")
         this.trackLoaded()
@@ -72,7 +75,7 @@ export default class Player {
 
   addToQueue(tracks: ContextTrack[]) {
     this.queue.push(...tracks);
-    this.socketServer.emitToListeners('addToQueue', [...tracks]);
+    this.socketServer.emitToListeners('addToQueue', [[...tracks]]);
   }
 
   removeFromQueue(tracks: ContextTrack[]) {
@@ -85,12 +88,34 @@ export default class Player {
       }
     }
 
-    this.socketServer.emitToListeners('removeFromQueue', removedTracks);
+    this.socketServer.emitToListeners('removeFromQueue', [removedTracks]);
   }
   
   clearQueue() {
     this.queue = [];
     this.socketServer.emitToListeners('clearQueue');
+  }
+
+  shiftQueueTrack(trackUri: string) {
+    const nextTrack = this.queue[0]
+
+    if (nextTrack?.uri === trackUri) {
+      this.queue.shift()
+      this.socketServer.emitToListeners('removeFromQueue', [[nextTrack]])
+    }
+  }
+
+  getProgressSnapshot() {
+    const progressMs = this.getTrackProgress()
+    const durationMs = this.songInfo.durationMs || 0
+    const remainingMs = Math.max(durationMs - progressMs, 0)
+
+    return {
+      progressMs,
+      durationMs,
+      remainingMs,
+      endsAt: durationMs > 0 && !this.paused ? new Date(Date.now() + remainingMs).toISOString() : null
+    }
   }
 
   /*
@@ -101,7 +126,7 @@ export default class Player {
       if (this.locked) {
         info?.socket.emit("bottomMessage", "Listen together is currently locked!", true)
       } else {
-        this.updateSong(pause, milliseconds)
+        this.updateSong(pause, milliseconds, info?.isHost ? info.socket.id : undefined)
       }
     }
   }
@@ -114,18 +139,19 @@ export default class Player {
       if (this.locked) {
         info.socket.emit("bottomMessage", "Listen together is currently locked!", true)
       } else {
-        this.changeSong(newTrackUri)
+        this.shiftQueueTrack(newTrackUri)
+        this.changeSong(newTrackUri, info.socket.id)
       }
     }
   }
 
-  listenerChangedSong(info: ClientInfo, newTrackUri: string, songName?: string, songImage?: string) {
+  listenerChangedSong(info: ClientInfo, newTrackUri: string, songInfo?: Partial<SongInfo>) {
     if (newTrackUri === "") {
       return;
     }
     info.trackUri = newTrackUri
     if (info.isHost) {
-      this.updateSongInfo(songName, songImage)
+      this.updateSongInfo(songInfo)
     }
     this.checkListenerHasAD()
     if (!this.locked) {
@@ -206,26 +232,43 @@ export default class Player {
   }
 
   onRequestQueue(info: ClientInfo) {
-    info.socket.emit('requestQueue', this.queue);
+    info.socket.emit('queueUpdate', this.queue);
   }
 
   onNoListeners() {
     this.trackUri = ""
     this.paused = true
     this.milliseconds = 0
-    this.updateSongInfo("", "")
+    this.songInfo = new SongInfo()
+    this.updateSongInfo()
   }
   
-  updateSongInfo(newName?: string, newImage?: string) {
-    if (newName != undefined)
-      this.songInfo.name = newName
+  updateSongInfo(newSongInfo?: Partial<SongInfo>) {
+    if (newSongInfo?.name != undefined)
+      this.songInfo.name = newSongInfo.name
 
-    if (newImage != undefined)
-      if ((newImage.match(/:/g) || []).length === 2)
-        this.songInfo.image = "https://i.scdn.co/image/" + newImage.split(":")[2]
+    if (newSongInfo?.image != undefined) {
+      if (newSongInfo.image.startsWith("http"))
+        this.songInfo.image = newSongInfo.image
+      else if ((newSongInfo.image.match(/:/g) || []).length === 2)
+        this.songInfo.image = "https://i.scdn.co/image/" + newSongInfo.image.split(":")[2]
       else
         this.songInfo.image = ""
+    }
 
+    if (newSongInfo?.artistName != undefined)
+      this.songInfo.artistName = newSongInfo.artistName
+
+    if (newSongInfo?.artists != undefined)
+      this.songInfo.artists = newSongInfo.artists
+
+    if (newSongInfo?.albumName != undefined)
+      this.songInfo.albumName = newSongInfo.albumName
+
+    if (newSongInfo?.durationMs != undefined)
+      this.songInfo.durationMs = newSongInfo.durationMs
+
+    this.songInfo.trackUri = this.trackUri
     this.songInfo.paused = this.paused
     this.socketServer.emitToNonListeners("songInfo", this.songInfo)
   }

@@ -442,6 +442,7 @@ const Index: NextPage = () => {
                   </div>
                 ) : (
                   listeners.map((listener) => {
+                    console.log(listener)
                     const latencyInfo = formatLatency(listener.latency);
                     return (
                       <div

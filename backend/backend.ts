@@ -1,15 +1,18 @@
-import { Server, Socket } from 'socket.io';
-import ClientInfo from './clientInfo';
+import { Server } from 'socket.io';
 import Player from './player';
 import SocketServer from './socket';
 
-// track uri example: "spotify:track:5Hyr47BBGpvOfcykSCcaw9"
-
 export default class Backend {
-  socketServer = new SocketServer(this.io);
-  player = new Player(this.socketServer)
+  public io: Server;
+  public socketServer: SocketServer;
+  public player: Player;
 
-  constructor (public io: Server) {
-    this.socketServer.addEvents(this.player)
+  constructor(io: Server) {
+    this.io = io;
+
+    this.socketServer = new SocketServer(this.io);
+    this.player = new Player(this.socketServer);
+
+    this.socketServer.addEvents(this.player);
   }
 }

@@ -78,7 +78,7 @@ export class ListenSession {
       }),
       (_info, update) => this.update(update),
     );
-    this.player = new Player(this.socketServer);
+    this.player = new Player(this.socketServer, () => this.markStateUpdated());
   }
 
   attachSocket(socket: Socket, ipAddress = "", visitorId = "") {
@@ -86,13 +86,18 @@ export class ListenSession {
   }
 
   validateHostPassword(password: string) {
-    return password === this.hostPassword || password === config.hostPassword;
+    const normalizedPassword = password.trim();
+    return normalizedPassword === this.hostPassword || normalizedPassword === config.hostPassword;
   }
 
   markActive() {
+    const wasEmpty = this.emptySince !== null || this.cleanupTimer !== null;
     this.updatedAt = Date.now();
     this.emptySince = null;
-    this.onActivity(this);
+
+    if (wasEmpty) {
+      this.onActivity(this);
+    }
   }
 
   markEmpty() {
@@ -117,6 +122,11 @@ export class ListenSession {
     this.updatedAt = Date.now();
     this.onUpdated(this);
     return this.summary();
+  }
+
+  markStateUpdated() {
+    this.updatedAt = Date.now();
+    this.onUpdated(this);
   }
 
   summary(origin = "") {

@@ -22,7 +22,10 @@ export default class Player {
   public loadAtMilliseconds = 0;
   public queue: ContextTrack[] = [];
   
-  constructor(public socketServer: SocketServer) { }
+  constructor(
+    public socketServer: SocketServer,
+    private readonly onStateChanged: () => void = () => {},
+  ) { }
 
   static isTrackListenable(trackUri: string) {
     return trackUri.startsWith("spotify:track:") || trackUri.startsWith("spotify:episode:")
@@ -65,6 +68,7 @@ export default class Player {
       this.trackUri = trackUri
       this.songInfo.trackUri = trackUri
       this.socketServer.emitToListeners("changeSong", [trackUri], exceptSocketId)
+      this.notifyStateChanged()
       this.clearQueueAdvanceTimer()
       this.loadingTrack = setTimeout(() => {
         console.log("Timed out for loading track!")
@@ -143,7 +147,8 @@ export default class Player {
     }
 
     const nextUri = normalizeSpotifyUri(nextTrack.uri)
-    this.socketServer.emitToListeners('removeFromQueue', [[nextTrack]])
+    this.socketServer.emitToAll('removeFromQueue', [nextTrack])
+    this.notifyStateChanged()
 
     if (Player.isTrackListenable(nextUri)) {
       this.changeSong(nextUri)
@@ -160,7 +165,8 @@ export default class Player {
 
   addToQueue(tracks: ContextTrack[]) {
     this.queue.push(...tracks);
-    this.socketServer.emitToListeners('addToQueue', [[...tracks]]);
+    this.socketServer.emitToAll('addToQueue', [...tracks]);
+    this.notifyStateChanged()
 
     if (this.isHostlessQueueMode() && !this.trackUri && this.socketServer.getListeners().length > 0) {
       this.playNextQueuedTrack()
@@ -177,13 +183,17 @@ export default class Player {
       }
     }
 
-    this.socketServer.emitToListeners('removeFromQueue', [removedTracks]);
+    if (removedTracks.length > 0) {
+      this.socketServer.emitToAll('removeFromQueue', removedTracks);
+      this.notifyStateChanged()
+    }
   }
   
   clearQueue() {
     this.queue = [];
-    this.socketServer.emitToListeners('clearQueue');
+    this.socketServer.emitToAll('clearQueue');
     this.clearQueueAdvanceTimer()
+    this.notifyStateChanged()
   }
 
   shiftQueueTrack(trackUri: string) {
@@ -191,7 +201,8 @@ export default class Player {
 
     if (nextTrack?.uri === trackUri) {
       this.queue.shift()
-      this.socketServer.emitToListeners('removeFromQueue', [[nextTrack]])
+      this.socketServer.emitToAll('removeFromQueue', [nextTrack])
+      this.notifyStateChanged()
     }
   }
 
@@ -333,6 +344,7 @@ export default class Player {
         this.changeSong(this.socketServer.getHost()?.trackUri || this.trackUri)
       }
       this.socketServer.sendListeners()
+      this.notifyStateChanged()
     }
   }
   
@@ -380,7 +392,17 @@ export default class Player {
 
     this.songInfo.trackUri = this.trackUri
     this.songInfo.paused = this.paused
-    this.socketServer.emitToNonListeners("songInfo", this.songInfo)
+    this.socketServer.emitToNonListeners("songInfo", {
+      ...this.songInfo,
+      locked: this.locked,
+      loading: this.loadingTrack !== null,
+      ...this.getProgressSnapshot(),
+    })
     this.scheduleQueueAdvance()
+    this.notifyStateChanged()
+  }
+
+  private notifyStateChanged() {
+    this.onStateChanged()
   }
 }

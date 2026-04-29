@@ -1,7 +1,7 @@
 import type { NextPage } from 'next';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import config from '../../config';
+import publicConfig from '../../publicConfig';
 
 const Banned: NextPage = () => {
   const router = useRouter();
@@ -23,7 +23,7 @@ const Banned: NextPage = () => {
             Reason: {reason}
           </p>
           <a
-            href={config.banAppealUrl}
+            href={publicConfig.banAppealUrl}
             className="mt-6 inline-flex rounded-lg bg-spotify-500 px-4 py-3 text-sm font-semibold text-black transition hover:bg-spotify-400"
           >
             Contact us for unban

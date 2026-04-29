@@ -3,7 +3,7 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import config from '../../config';
+import publicConfig from '../../publicConfig';
 
 type SessionSummary = {
   id: string;
@@ -330,7 +330,7 @@ const Index: NextPage = () => {
 
         <footer className="mt-8 flex flex-col gap-3 border-t border-white/10 pt-5 text-sm text-white/55 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            Recommended client version <span className="font-semibold text-spotify-200">v{config.clientRecommendedVersion}</span>
+            Recommended client version <span className="font-semibold text-spotify-200">v{publicConfig.clientRecommendedVersion}</span>
           </div>
           <div>Private sessions stay hidden from the public list.</div>
         </footer>

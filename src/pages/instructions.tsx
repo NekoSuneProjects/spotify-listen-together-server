@@ -2,7 +2,7 @@ import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import config from '../../config';
+import publicConfig from '../../publicConfig';
 
 function selectCodeBlock(target: HTMLDivElement) {
   if (!window.getSelection) {
@@ -200,7 +200,7 @@ const Instructions: NextPage = () => {
               <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
                 <div className="text-xs uppercase tracking-[0.2em] text-white/35">Recommended Client</div>
                 <div className="mt-2 text-lg font-semibold text-white">
-                  v{config.clientRecommendedVersion}
+                  v{publicConfig.clientRecommendedVersion}
                 </div>
               </div>
             </div>

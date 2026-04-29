@@ -3,7 +3,7 @@ import next from 'next'
 import http from 'http'
 import { Server } from 'socket.io'
 import path from 'path'
-import dotenv from 'dotenv'
+import './loadEnv'
 import { normalizeSpotifyUri } from './spotifyUri'
 import { ListenSession, getOrigin } from './sessionManager'
 import pJson from '../package.json'
@@ -14,10 +14,8 @@ import BanManager, {
 
 express()
 
-dotenv.config()
-
 function readIntEnv(name: string, fallback: number) {
-  const value = process.env[name]
+  const value = process.env[name]?.trim()
 
   if (!value) {
     return fallback
@@ -111,13 +109,13 @@ app.prepare().then(async () => {
 
   const getAdminPassword = (req: express.Request) => {
     const headerPassword = typeof req.headers['x-admin-password'] === 'string'
-      ? req.headers['x-admin-password']
+      ? req.headers['x-admin-password'].trim()
       : ''
     const bodyPassword = typeof req.body?.adminPassword === 'string'
-      ? req.body.adminPassword
+      ? req.body.adminPassword.trim()
       : ''
     const queryPassword = typeof req.query?.adminPassword === 'string'
-      ? req.query.adminPassword
+      ? req.query.adminPassword.trim()
       : ''
 
     return headerPassword || bodyPassword || queryPassword

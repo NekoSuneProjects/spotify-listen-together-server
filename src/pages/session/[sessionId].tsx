@@ -2,7 +2,7 @@ import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 type Listener = {
@@ -92,7 +92,7 @@ const SessionPage: NextPage = () => {
   const [nowMs, setNowMs] = useState(Date.now());
   const [fetchTime, setFetchTime] = useState(Date.now());
 
-  const loadState = async () => {
+  const loadState = useCallback(async () => {
     if (!sessionId) {
       return;
     }
@@ -113,7 +113,7 @@ const SessionPage: NextPage = () => {
       setFetchTime(Date.now());
       setState(nextState);
     } catch {}
-  };
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -133,6 +133,7 @@ const SessionPage: NextPage = () => {
     });
 
     socket.on('songInfo', (songInfo: Partial<ApiState['song']>) => {
+      setFetchTime(Date.now());
       setState((current) =>
         current ? { ...current, song: { ...current.song, ...songInfo } } : current,
       );
@@ -181,6 +182,10 @@ const SessionPage: NextPage = () => {
       setState((current) => (current ? { ...current, queue: [] } : current));
     });
 
+    socket.on('sessionsUpdated', () => {
+      loadState();
+    });
+
     socket.on('sessionDeleted', () => {
       setNotFound(true);
     });
@@ -199,7 +204,7 @@ const SessionPage: NextPage = () => {
       socket?.disconnect();
       socket = null;
     };
-  }, [sessionId]);
+  }, [loadState, sessionId]);
 
   const song = state?.song;
   const liveProgress = useMemo(() => {

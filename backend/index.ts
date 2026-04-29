@@ -5,6 +5,8 @@ import { Server } from 'socket.io'
 import path from 'path'
 import dotenv from 'dotenv'
 import { normalizeSpotifyUri } from './spotifyUri'
+import { ListenSession, getOrigin } from './sessionManager'
+import pJson from '../package.json'
 
 express()
 
@@ -38,7 +40,6 @@ app.prepare().then(async () => {
     pingInterval: 1000
   })
 
-  // Sorry I don't know another way
   let publicFolder = __dirname
   let distPos = publicFolder.lastIndexOf("dist");
   if (distPos != -1)
@@ -46,6 +47,18 @@ app.prepare().then(async () => {
 
   console.log(publicFolder)
 
+  server.use((req, res, nextMiddleware) => {
+    res.header('Access-Control-Allow-Origin', '*')
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key')
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
+
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204)
+      return
+    }
+
+    nextMiddleware()
+  })
   server.use(express.json())
   server.use(express.static(publicFolder))
 
@@ -63,10 +76,14 @@ app.prepare().then(async () => {
     return headerKey || bearer
   }
 
+  const hasAdminApiKey = (req: express.Request) => {
+    return !!config.apiKey && getAdminApiKey(req) === config.apiKey
+  }
+
   const requireAdminApiKey = (
     req: express.Request,
     res: express.Response,
-    next: express.NextFunction,
+    nextMiddleware: express.NextFunction,
   ) => {
     if (!config.apiKey) {
       res.status(503).json({ error: 'API_KEY is not configured on the server.' })
@@ -78,56 +95,214 @@ app.prepare().then(async () => {
       return
     }
 
-    next()
+    nextMiddleware()
   }
 
-  const serializeState = () => {
-    const host = backend.socketServer.getHost()
-    const listeners = backend.socketServer.getListeners()
-    const progress = backend.player.getProgressSnapshot()
+  const readQuerySessionId = (req: express.Request) => {
+    const value = req.query.sessionId || req.query.session
+    return typeof value === 'string' ? value : ''
+  }
 
+  const readRouteParam = (value: string | string[] | undefined) => {
+    return Array.isArray(value) ? value[0] : value || ''
+  }
+
+  const getSessionOr404 = (
+    req: express.Request,
+    res: express.Response,
+    explicitSessionId?: string,
+  ) => {
+    const session = explicitSessionId
+      ? backend.sessionManager.getSession(explicitSessionId)
+      : backend.sessionManager.resolveApiSession(readQuerySessionId(req))
+
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' })
+      return null
+    }
+
+    return session
+  }
+
+  const serializeState = (session: ListenSession, req: express.Request) => {
     return {
-      serverTime: new Date().toISOString(),
-      host: host ? {
-        name: host.name,
-        trackUri: host.trackUri
-      } : null,
-      song: {
-        trackUri: backend.player.trackUri,
-        name: backend.player.songInfo.name,
-        image: backend.player.songInfo.image,
-        artistName: backend.player.songInfo.artistName,
-        artists: backend.player.songInfo.artists,
-        albumName: backend.player.songInfo.albumName,
-        paused: backend.player.paused,
-        locked: backend.player.locked,
-        loading: backend.player.loadingTrack !== null,
-        ...progress
-      },
-      listeners: listeners.map((info) => ({
-        name: info.name,
-        isHost: info.isHost,
-        loggedIn: info.loggedIn,
-        latency: info.latency,
-        trackUri: info.trackUri
-      })),
-      queue: backend.player.getQueue(),
+      ...backend.sessionManager.serializeState(session, getOrigin(req)),
       fallbackPlaylistUri: normalizeSpotifyUri(config.fallbackPlaylistUri) || null
     }
+  }
+
+  const readRequestTrack = (body: any) => {
+    const metadata = body?.metadata || {}
+    const uri = normalizeSpotifyUri(body?.uri || body?.trackUri || metadata?.uri)
+
+    if (!uri) {
+      return null
+    }
+
+    return {
+      uri,
+      metadata: {
+        ...metadata,
+        title: body?.trackName || body?.name || metadata?.title || metadata?.name || uri,
+        artist_name: body?.artistName || body?.artist_name || metadata?.artist_name || metadata?.artistName || '',
+        album_title: body?.albumName || body?.album_title || metadata?.album_title || metadata?.albumName || '',
+        image_url: body?.image || body?.image_url || metadata?.image_url || metadata?.image || '',
+      }
+    }
+  }
+
+  const handleRequestSong = (
+    req: express.Request,
+    res: express.Response,
+    session: ListenSession,
+  ) => {
+    const track = readRequestTrack(req.body)
+    const requestedBy = req.body?.requestedBy || req.body?.twitchUser || req.body?.user || 'API'
+
+    if (!track) {
+      res.status(400).json({ error: 'Body must include uri or trackUri.' })
+      return
+    }
+
+    const result = backend.sessionManager.addRequestToSession(session, track, requestedBy)
+    res.json({
+      ok: true,
+      session: session.serialize(getOrigin(req)),
+      track,
+      ...result,
+    })
+  }
+
+  const handleAdminQueue = (
+    req: express.Request,
+    res: express.Response,
+    session: ListenSession,
+  ) => {
+    const tracks = Array.isArray(req.body?.tracks)
+      ? req.body.tracks.map((track: any) => ({
+          ...track,
+          uri: normalizeSpotifyUri(track?.uri),
+        })).filter((track: any) => !!track.uri)
+      : []
+    const playNow = req.body?.playNow === true
+    const hasHost = session.socketServer.getHost() !== null
+
+    if (tracks.length === 0) {
+      res.status(400).json({ error: 'Body must include a non-empty tracks array.' })
+      return
+    }
+
+    session.player.addToQueue(tracks)
+
+    if (playNow && !hasHost) {
+      session.player.playNextQueuedTrack()
+    }
+
+    res.json({
+      ok: true,
+      session: session.serialize(getOrigin(req)),
+      hostControlled: hasHost,
+      queueCount: session.player.getQueue().length,
+      queue: session.player.getQueue()
+    })
   }
 
   server.get('/api/health', (_req, res) => {
     res.json({ ok: true })
   })
 
-  server.get('/api/song', (_req, res) => {
-    res.json(serializeState().song)
+  server.get('/api/version', (_req, res) => {
+    res.json({
+      serverVersion: pJson.version,
+      pluginVersion: config.clientRecommendedVersion,
+      clientRecommendedVersion: config.clientRecommendedVersion,
+      clientVersionRequirements: config.clientVersionRequirements,
+      updateUrl: config.clientUpdateUrl,
+      checkedAt: new Date().toISOString(),
+    })
   })
 
-  server.get('/api/listeners', (_req, res) => {
+  server.get('/api/sessions', (req, res) => {
     res.json({
-      count: backend.socketServer.getListeners().length,
-      listeners: backend.socketServer.getListeners().map((info) => ({
+      sessions: backend.sessionManager.listSessions({
+        includePrivate: false,
+        origin: getOrigin(req),
+      })
+    })
+  })
+
+  server.post('/api/sessions', (req, res) => {
+    if (req.body?.hostPassword !== config.hostPassword && !hasAdminApiKey(req)) {
+      res.status(401).json({ error: 'Only a host can create sessions.' })
+      return
+    }
+
+    const session = backend.sessionManager.createSession({
+      name: req.body?.name,
+      isPublic: req.body?.isPublic !== false,
+    })
+
+    res.status(201).json({
+      ok: true,
+      session: session.serialize(getOrigin(req)),
+    })
+  })
+
+  server.get('/api/sessions/:sessionId', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+
+    res.json({
+      session: session.serialize(getOrigin(req)),
+    })
+  })
+
+  server.patch('/api/sessions/:sessionId', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+
+    if (req.body?.hostPassword !== config.hostPassword && !hasAdminApiKey(req)) {
+      res.status(401).json({ error: 'Only the host can update this session.' })
+      return
+    }
+
+    session.update({
+      name: req.body?.name,
+      isPublic: req.body?.isPublic,
+    })
+
+    session.socketServer.emitToAll("sessionInfo", session.summary())
+    res.json({
+      ok: true,
+      session: session.serialize(getOrigin(req)),
+    })
+  })
+
+  server.delete('/api/sessions/:sessionId', requireAdminApiKey, (req, res) => {
+    res.json({
+      ok: backend.sessionManager.deleteSession(readRouteParam(req.params.sessionId)),
+    })
+  })
+
+  server.get('/api/song', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    res.json(serializeState(session, req).song)
+  })
+
+  server.get('/api/nowplaying', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    res.json(serializeState(session, req).song)
+  })
+
+  server.get('/api/listeners', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    res.json({
+      session: session.serialize(getOrigin(req)),
+      count: session.socketServer.getListeners().length,
+      listeners: session.socketServer.getListeners().map((info) => ({
         name: info.name,
         isHost: info.isHost,
         loggedIn: info.loggedIn,
@@ -137,52 +312,125 @@ app.prepare().then(async () => {
     })
   })
 
-  server.get('/api/queue', (_req, res) => {
+  server.get('/api/queue', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
     res.json({
-      count: backend.player.queue.length,
-      queue: backend.player.getQueue()
+      session: session.serialize(getOrigin(req)),
+      count: session.player.queue.length,
+      queue: session.player.getQueue()
     })
   })
 
-  server.get('/api/state', (_req, res) => {
-    res.json(serializeState())
+  server.get('/api/state', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    res.json(serializeState(session, req))
+  })
+
+  server.get('/api/sessions/:sessionId/song', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    res.json(serializeState(session, req).song)
+  })
+
+  server.get('/api/sessions/:sessionId/nowplaying', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    res.json(serializeState(session, req).song)
+  })
+
+  server.get('/api/sessions/:sessionId/listeners', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    res.json({
+      session: session.serialize(getOrigin(req)),
+      count: session.socketServer.getListeners().length,
+      listeners: session.socketServer.getListeners().map((info) => ({
+        name: info.name,
+        isHost: info.isHost,
+        loggedIn: info.loggedIn,
+        latency: info.latency,
+        trackUri: info.trackUri
+      }))
+    })
+  })
+
+  server.get('/api/sessions/:sessionId/queue', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    res.json({
+      session: session.serialize(getOrigin(req)),
+      count: session.player.queue.length,
+      queue: session.player.getQueue()
+    })
+  })
+
+  server.get('/api/sessions/:sessionId/state', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    res.json(serializeState(session, req))
+  })
+
+  server.post('/api/request', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    handleRequestSong(req, res, session)
+  })
+
+  server.post('/api/twitch/request', (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    handleRequestSong(req, res, session)
+  })
+
+  server.post('/api/sessions/:sessionId/request', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    handleRequestSong(req, res, session)
+  })
+
+  server.post('/api/sessions/:sessionId/requests', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    handleRequestSong(req, res, session)
+  })
+
+  server.post('/api/sessions/:sessionId/twitch/request', (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    handleRequestSong(req, res, session)
   })
 
   server.post('/api/admin/queue', requireAdminApiKey, (req, res) => {
-    const tracks = Array.isArray(req.body?.tracks)
-      ? req.body.tracks.map((track: any) => ({
-          ...track,
-          uri: normalizeSpotifyUri(track?.uri),
-        }))
-      : []
-    const playNow = req.body?.playNow === true
-    const hasHost = backend.socketServer.getHost() !== null
-
-    if (tracks.length === 0) {
-      res.status(400).json({ error: 'Body must include a non-empty tracks array.' })
-      return
-    }
-
-    backend.player.addToQueue(tracks)
-
-    if (playNow && !hasHost) {
-      backend.player.playNextQueuedTrack()
-    }
-
-    res.json({
-      ok: true,
-      hostControlled: hasHost,
-      queueCount: backend.player.getQueue().length,
-      queue: backend.player.getQueue()
-    })
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    handleAdminQueue(req, res, session)
   })
 
-  server.post('/api/admin/queue/clear', requireAdminApiKey, (_req, res) => {
-    backend.player.clearQueue()
-    res.json({ ok: true })
+  server.post('/api/sessions/:sessionId/admin/queue', requireAdminApiKey, (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    handleAdminQueue(req, res, session)
   })
 
-  server.post('/api/admin/fallback/play', requireAdminApiKey, (_req, res) => {
+  server.post('/api/admin/queue/clear', requireAdminApiKey, (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
+    session.player.clearQueue()
+    res.json({ ok: true, session: session.serialize(getOrigin(req)) })
+  })
+
+  server.post('/api/sessions/:sessionId/admin/queue/clear', requireAdminApiKey, (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    session.player.clearQueue()
+    res.json({ ok: true, session: session.serialize(getOrigin(req)) })
+  })
+
+  server.post('/api/admin/fallback/play', requireAdminApiKey, (req, res) => {
+    const session = getSessionOr404(req, res)
+    if (!session) return
     const fallbackUri = normalizeSpotifyUri(config.fallbackPlaylistUri)
 
     if (!fallbackUri) {
@@ -190,11 +438,25 @@ app.prepare().then(async () => {
       return
     }
 
-    backend.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
-    res.json({ ok: true, fallbackPlaylistUri: fallbackUri })
+    session.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
+    res.json({ ok: true, session: session.serialize(getOrigin(req)), fallbackPlaylistUri: fallbackUri })
   })
 
-  server.all('*', (req, res) => {
+  server.post('/api/sessions/:sessionId/admin/fallback/play', requireAdminApiKey, (req, res) => {
+    const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
+    if (!session) return
+    const fallbackUri = normalizeSpotifyUri(config.fallbackPlaylistUri)
+
+    if (!fallbackUri) {
+      res.status(400).json({ error: 'FALLBACK_PLAYLIST_URI is not configured.' })
+      return
+    }
+
+    session.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
+    res.json({ ok: true, session: session.serialize(getOrigin(req)), fallbackPlaylistUri: fallbackUri })
+  })
+
+  server.use((req, res) => {
     return handle(req, res)
   })
 

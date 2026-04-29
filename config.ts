@@ -15,5 +15,6 @@ export default {
   apiKey: process.env.API_KEY || "",
   fallbackPlaylistUri: process.env.FALLBACK_PLAYLIST_URI || "",
   clientVersionRequirements: "0.5.x",
-  clientRecommendedVersion: "0.5.0"
+  clientRecommendedVersion: "0.5.3",
+  clientUpdateUrl: process.env.CLIENT_UPDATE_URL || "https://github.com/NekoSuneProjects/spotify-listen-together/releases/latest"
 }

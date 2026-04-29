@@ -1,15 +1,38 @@
-import { Server, Socket } from "socket.io";
+import { Socket } from "socket.io";
 import ClientInfo from "./clientInfo";
 import config from "../config";
 import ClientVersionValidator from './clientVersionValidator';
 import Player, { ContextTrack } from "./player";
+
+export type SessionSocketUpdate = {
+  name?: string;
+  isPublic?: boolean;
+}
+
+export type SessionSocketSummary = {
+  id: string;
+  name: string;
+  isPublic: boolean;
+  url: string;
+}
+
+type SessionUpdateHandler = (
+  info: ClientInfo,
+  update: SessionSocketUpdate,
+) => SessionSocketSummary | null;
 
 export default class SocketServer {
   clientsInfo = new Map<string, ClientInfo>()
   private player: Player | undefined
   private clientVersionValidator = new ClientVersionValidator()
 
-  constructor (private io: Server) {}
+  constructor (
+    public readonly sessionId: string,
+    private readonly getSessionSummary: () => SessionSocketSummary,
+    private readonly onActivity: () => void,
+    private readonly onEmpty: () => void,
+    private readonly onUpdateSession?: SessionUpdateHandler,
+  ) {}
 
   getListeners() {
     return [...this.clientsInfo.values()].filter((info: ClientInfo) => info.loggedIn)
@@ -23,6 +46,12 @@ export default class SocketServer {
     return this.getHost() || this.getListeners()[0] || null
   }
 
+  emitToAll(ev: string, ...args: any[]) {
+    this.clientsInfo.forEach((info) => {
+      info.socket.emit(ev, ...args)
+    })
+  }
+
   emitToNonListeners(ev: string, ...args: any) {
     [...this.clientsInfo.values()].filter((info: ClientInfo) => !info.loggedIn).forEach(info => {
       info.socket.emit(ev, ...args)
@@ -34,7 +63,6 @@ export default class SocketServer {
     let maxLatency = 0
     let minLatency = config.maxDelay
     listeners.forEach(info => {
-      // console.log(`Latency for ${info.name} is ${info.latency}`)
       maxLatency = Math.max(info.latency, maxLatency)
       minLatency = Math.min(info.latency, minLatency)
     })
@@ -44,9 +72,8 @@ export default class SocketServer {
       }
 
       let delay = ((maxLatency - minLatency) - (info.latency - minLatency))
-      // console.log(`Sending to ${socketId} with ${delay} ms delay.`)
       setTimeout(() => {
-        info.socket.emit(ev, ...args) 
+        info.socket.emit(ev, ...args)
       }, delay)
     });
   }
@@ -60,14 +87,20 @@ export default class SocketServer {
   }
 
   sendListeners(socket?: Socket) {
-    if (!socket) 
-      socket = <any>this.io
-
-    socket?.emit("listeners", this.getListeners().map(info => {return {
+    const listeners = this.getListeners().map(info => {return {
       name: info.name,
       isHost: info.isHost,
-      watchingAD: info.trackUri.includes("spotify:ad:")
-    }}))
+      watchingAD: info.trackUri.includes("spotify:ad:"),
+      trackUri: info.trackUri,
+      latency: info.latency,
+    }})
+
+    if (socket) {
+      socket.emit("listeners", listeners)
+      return
+    }
+
+    this.emitToAll("listeners", listeners)
   }
 
   updateHost(info: ClientInfo, isHost: boolean) {
@@ -75,6 +108,7 @@ export default class SocketServer {
     info.socket.emit("isHost", isHost)
     this.sendListeners()
     this.sendPlaybackLeader()
+    this.onActivity()
   }
 
   sendPlaybackLeader() {
@@ -84,135 +118,165 @@ export default class SocketServer {
     })
   }
 
-  addEvents(player: Player) {
+  attachSocket(socket: Socket, player: Player) {
     this.player = player
-    this.io.on("connection", (socket: Socket) => {
-      let lastPing = 0
-      let info = new ClientInfo(socket)
-      this.clientsInfo.set(socket.id, info)
-    
-      socket.conn.on('packet', function (packet) {
-        if (packet.type === 'pong') {
-          info.latency = Math.min((Date.now() - lastPing)/2, config.maxDelay)
-        }
-      });
-    
-      socket.onAny((ev: string, ...args: any) => {
-        console.log(`Receiving ${ev}(host=${info.isHost}): ${args}`)
-      })
-      
-      socket.conn.on('packetCreate', function (packet) {
-        if (packet.type === 'ping')
-          lastPing = Date.now()
-      });
-    
-      socket.on("login", (name: string, clientVersion?: string, badVersion?: (requirements: string) => void) => {
-        if (this.clientVersionValidator.validate(clientVersion)) {
-          info.name = name
-          info.loggedIn = true;
-          this.player?.listenerLoggedIn(info)
-          this.sendListeners()
-          this.sendPlaybackLeader()
-          console.log(`Sending queue to ${name}`)
-          socket.emit('queueUpdate', this.player?.getQueue())
-        } else {
-          if (badVersion != null)
-            badVersion(config.clientVersionRequirements)
-            
-          setTimeout(() => {
-            socket.disconnect()
-          }, 3000)
-        }
-      })
+    let lastPing = 0
+    let info = new ClientInfo(socket)
+    this.clientsInfo.set(socket.id, info)
+    socket.emit("sessionInfo", this.getSessionSummary())
 
-      socket.on("requestHost", (password: string) => {
-        if (password === config.hostPassword) {
-          // if ([...this.clientsInfo.values()].every((info: ClientInfo) => !info.loggedIn || !info.isHost)) {
-          //   this.updateHost(info, true)
-          // } else {
-          //   socket.emit("bottomMessage", "There is already an host.")
-          // }
-          this.updateHost(info, true);
-          socket.emit("bottomMessage", "Host permissions acquired.", true)
-        } else {
-          this.updateHost(info, false)
-          socket.emit("bottomMessage", "Incorrect password.", true)
-        }
-      })
-    
-      socket.on("cancelHost", () => {
+    socket.conn.on('packet', function (packet) {
+      if (packet.type === 'pong') {
+        info.latency = Math.min((Date.now() - lastPing)/2, config.maxDelay)
+      }
+    });
+
+    socket.onAny((ev: string, ...args: any) => {
+      console.log(`Receiving ${ev}(session=${this.sessionId}, host=${info.isHost}): ${args}`)
+    })
+
+    socket.conn.on('packetCreate', function (packet) {
+      if (packet.type === 'ping')
+        lastPing = Date.now()
+    });
+
+    socket.on("login", (name: string, clientVersion?: string, badVersion?: (requirements: string) => void) => {
+      if (this.clientVersionValidator.validate(clientVersion)) {
+        info.name = name
+        info.loggedIn = true;
+        this.onActivity()
+        this.player?.listenerLoggedIn(info)
+        this.sendListeners()
+        this.sendPlaybackLeader()
+        console.log(`Sending queue to ${name}`)
+        socket.emit('queueUpdate', this.player?.getQueue())
+        socket.emit("sessionInfo", this.getSessionSummary())
+      } else {
+        if (badVersion != null)
+          badVersion(config.clientVersionRequirements)
+
+        setTimeout(() => {
+          socket.disconnect()
+        }, 3000)
+      }
+    })
+
+    socket.on("requestHost", (password: string) => {
+      if (password === config.hostPassword) {
+        this.updateHost(info, true);
+        socket.emit("bottomMessage", "Host permissions acquired.", true)
+      } else {
         this.updateHost(info, false)
-      })
+        socket.emit("bottomMessage", "Incorrect password.", true)
+      }
+    })
 
-      socket.on("requestUpdateSong", (pause: boolean, milliseconds: number) => {
-        this.player?.requestUpdateSong(info, pause, milliseconds)
-      })
-  
-      socket.on("requestSongInfo", () => {
-        this.player?.onRequestSongInfo(info)
-      })
+    socket.on("cancelHost", () => {
+      this.updateHost(info, false)
+    })
 
-      socket.on("loadingSong", (trackUri: string) => {
-        this.player?.listenerLoadingSong(info, trackUri)
-      })
+    socket.on("updateSession", (update: SessionSocketUpdate, callback?: (response: any) => void) => {
+      if (!info.isHost) {
+        callback?.({ ok: false, error: "Only the host can update the session." })
+        socket.emit("bottomMessage", "Only the host can update the session.", true)
+        return
+      }
 
-      socket.on("changedSong", (trackUri: string, songInfoOrName?: any, songImage?: string) => {
-        this.player?.listenerChangedSong(info, trackUri, songInfoOrName, songImage)
-      })
+      const summary = this.onUpdateSession?.(info, update)
+      if (!summary) {
+        callback?.({ ok: false, error: "Session update failed." })
+        return
+      }
 
-      socket.on("requestListeners", () => {
-        this.sendListeners(socket)
-      })
+      this.emitToAll("sessionInfo", summary)
+      this.onActivity()
+      callback?.({ ok: true, session: summary })
+    })
 
-      socket.on("requestSong", (trackUri: string, trackName: string, metadata?: any) => {
-        const host = this.getHost()
+    socket.on("requestUpdateSong", (pause: boolean, milliseconds: number) => {
+      this.onActivity()
+      this.player?.requestUpdateSong(info, pause, milliseconds)
+    })
 
-        if (host) {
-          host.socket.emit("songRequested", trackUri, trackName, info.name)
-          socket.emit("bottomMessage", `Sent "${trackName}" to the host.`, true)
-          return
+    socket.on("requestSongInfo", () => {
+      this.player?.onRequestSongInfo(info)
+      socket.emit("sessionInfo", this.getSessionSummary())
+    })
+
+    socket.on("loadingSong", (trackUri: string) => {
+      this.onActivity()
+      this.player?.listenerLoadingSong(info, trackUri)
+    })
+
+    socket.on("changedSong", (trackUri: string, songInfoOrName?: any, songImage?: string) => {
+      this.onActivity()
+      this.player?.listenerChangedSong(info, trackUri, songInfoOrName, songImage)
+    })
+
+    socket.on("requestListeners", () => {
+      this.sendListeners(socket)
+    })
+
+    socket.on("requestSong", (trackUri: string, trackName: string, metadata?: any) => {
+      const host = this.getHost()
+      this.onActivity()
+
+      if (host) {
+        host.socket.emit("songRequested", trackUri, trackName, info.name)
+        socket.emit("bottomMessage", `Sent "${trackName}" to the host.`, true)
+        return
+      }
+
+      this.player?.addToQueue([{
+        uri: trackUri,
+        metadata: {
+          title: trackName,
+          artist_name: metadata?.artist_name || metadata?.artistName || "",
+          album_title: metadata?.album_title || metadata?.albumName || "",
+          image_url: metadata?.image_url || metadata?.image || "",
+          requested_by: info.name,
         }
+      }])
 
-        this.player?.addToQueue([{
-          uri: trackUri,
-          metadata: {
-            title: trackName,
-            artist_name: metadata?.artist_name || metadata?.artistName || "",
-            album_title: metadata?.album_title || metadata?.albumName || "",
-            image_url: metadata?.image_url || metadata?.image || "",
-            requested_by: info.name,
-          }
-        }])
+      socket.emit("bottomMessage", `Queued "${trackName}".`, true)
+    })
 
-        socket.emit("bottomMessage", `Queued "${trackName}".`, true)
-      })
+    socket.on("requestQueue", () => {
+      this.player?.onRequestQueue(info);
+    });
 
-      // Queue events
-      socket.on("requestQueue", () => {
-        this.player?.onRequestQueue(info);
-      });
+    socket.on("addToQueue", (tracks: ContextTrack[]) => {
+      this.onActivity()
+      this.player?.addToQueue(tracks);
+    });
 
-      socket.on("addToQueue", (tracks: ContextTrack[]) => {
-        this.player?.addToQueue(tracks);
-      });
+    socket.on("removeFromQueue", (tracks: ContextTrack[]) => {
+      this.onActivity()
+      this.player?.removeFromQueue(tracks);
+    });
 
-      socket.on("removeFromQueue", (tracks: ContextTrack[]) => {
-        this.player?.removeFromQueue(tracks);
-      });
+    socket.on("clearQueue", () => {
+      this.onActivity()
+      this.player?.clearQueue();
+    });
 
-      socket.on("clearQueue", () => {
-        this.player?.clearQueue();
-      });
+    socket.on("disconnecting", () => {
+      const wasLoggedIn = info.loggedIn
+      this.clientsInfo.delete(socket.id)
 
-      socket.on("disconnecting", (reason) => {
-        this.clientsInfo.delete(socket.id)
+      if (wasLoggedIn) {
         this.player?.listenerLoggedOut()
         this.sendListeners()
         this.sendPlaybackLeader()
         if (this.getListeners().length === 0) {
           this.player?.onNoListeners()
+          this.onEmpty()
+        } else {
+          this.onActivity()
         }
-      })
+      } else if (this.getListeners().length === 0) {
+        this.onEmpty()
+      }
     })
   }
 }

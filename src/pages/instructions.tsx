@@ -68,7 +68,7 @@ const Instructions: NextPage = () => {
     }
   }, []);
 
-  const repoURL = `https://github.com/NekoSuneProjects/spotify-listen-together`;
+  const repoURL = `https://github.com/NekoSuneProjectsForks/spotify-listen-together`;
   const listenTogetherURL = `${repoURL}/releases/latest/download/listenTogether.js`;
   const windowsInstallCMD = `iwr -useb https://raw.githubusercontent.com/spicetify/cli/main/install.ps1 | iex`;
   const unixInstallCMD = `curl -fsSL https://raw.githubusercontent.com/spicetify/cli/main/install.sh | sh`;

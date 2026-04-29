@@ -169,7 +169,7 @@ const Index: NextPage = () => {
               Install Client
             </Link>
             <a
-              href="https://github.com/NekoSuneProjects/spotify-listen-together"
+              href="https://github.com/NekoSuneProjectsForks/spotify-listen-together"
               className="rounded-lg bg-spotify-500 px-4 py-3 text-sm font-semibold text-black transition hover:bg-spotify-400"
             >
               GitHub

@@ -1,5 +1,5 @@
 # Spotify Listen Together (Server)
-To understand what this is, visit [Spotify Listen Together](https://github.com/NekoSuneProjects/spotify-listen-together).
+To understand what this is, visit [Spotify Listen Together](https://github.com/NekoSuneProjectsForks/spotify-listen-together).
 
 ### Creating a server
 The server must be hosted somewhere.
@@ -115,4 +115,4 @@ await fetch("http://localhost:3000/api/admin/fallback/play", {
 
 To host with Render:
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/NekoSuneProjects/spotify-listen-together-server)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/NekoSuneProjectsForks/spotify-listen-together-server)

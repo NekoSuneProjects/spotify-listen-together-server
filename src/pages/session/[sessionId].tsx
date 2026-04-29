@@ -84,6 +84,9 @@ const SessionPage: NextPage = () => {
   const sessionId = typeof router.query.sessionId === 'string'
     ? router.query.sessionId
     : '';
+  const generatedHostPassword = typeof router.query.hostPassword === 'string'
+    ? router.query.hostPassword
+    : '';
   const [state, setState] = useState<ApiState | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -182,6 +185,10 @@ const SessionPage: NextPage = () => {
       setNotFound(true);
     });
 
+    socket.on('banned', (ban: { reason?: string }) => {
+      window.location.href = `/banned?reason=${encodeURIComponent(ban?.reason || 'Banned by site moderation.')}`;
+    });
+
     const refresh = setInterval(loadState, 3000);
     const clock = setInterval(() => setNowMs(Date.now()), 1000);
     loadState();
@@ -273,6 +280,29 @@ const SessionPage: NextPage = () => {
         ) : (
           <section className="grid flex-1 gap-6 lg:grid-cols-[1.5fr_0.95fr]">
             <div className="space-y-6">
+              {generatedHostPassword ? (
+                <div className="rounded-lg border border-spotify-400/30 bg-spotify-500/10 p-5">
+                  <div className="text-xs uppercase text-spotify-200">
+                    Session Host Password
+                  </div>
+                  <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <code className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/35 px-3 py-3 text-lg text-white">
+                      {generatedHostPassword}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(generatedHostPassword)}
+                      className="rounded-lg bg-spotify-500 px-4 py-3 text-sm font-semibold text-black transition hover:bg-spotify-400"
+                    >
+                      Copy Host Password
+                    </button>
+                  </div>
+                  <p className="mt-3 text-sm text-white/60">
+                    Save this now. It is only shown after session creation and is needed to become host in Spotify.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid overflow-hidden rounded-lg border border-white/10 bg-black/30 md:grid-cols-[300px_1fr]">
                 <div className="relative min-h-[300px] bg-black/30">
                   <img

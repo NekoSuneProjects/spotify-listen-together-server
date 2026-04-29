@@ -16,5 +16,6 @@ export default {
   fallbackPlaylistUri: process.env.FALLBACK_PLAYLIST_URI || "",
   clientVersionRequirements: "0.5.x",
   clientRecommendedVersion: "0.5.3",
-  clientUpdateUrl: process.env.CLIENT_UPDATE_URL || "https://github.com/NekoSuneProjects/spotify-listen-together/releases/latest"
+  clientUpdateUrl: process.env.CLIENT_UPDATE_URL || "https://github.com/NekoSuneProjects/spotify-listen-together/releases/latest",
+  banAppealUrl: process.env.BAN_APPEAL_URL || "https://nekosunevr.co.uk/?redirect=discord"
 }

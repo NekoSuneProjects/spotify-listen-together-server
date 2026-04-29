@@ -7,6 +7,10 @@ import dotenv from 'dotenv'
 import { normalizeSpotifyUri } from './spotifyUri'
 import { ListenSession, getOrigin } from './sessionManager'
 import pJson from '../package.json'
+import BanManager, {
+  buildBannedUrl,
+  ensureVisitorCookie,
+} from './banManager'
 
 express()
 
@@ -33,6 +37,7 @@ app.prepare().then(async () => {
   const { default: Backend } = await import('./backend')
   const server = express()
   const httpServer = http.createServer(server)
+  const banManager = new BanManager()
   const io = new Server(httpServer, {
     cors: {
       origin: '*'
@@ -47,9 +52,11 @@ app.prepare().then(async () => {
 
   console.log(publicFolder)
 
+  server.set('trust proxy', true)
+
   server.use((req, res, nextMiddleware) => {
     res.header('Access-Control-Allow-Origin', '*')
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key')
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, X-Admin-Password')
     res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
 
     if (req.method === 'OPTIONS') {
@@ -59,10 +66,32 @@ app.prepare().then(async () => {
 
     nextMiddleware()
   })
+  server.use((req, res, nextMiddleware) => {
+    ensureVisitorCookie(req, res)
+    const ban = banManager.findForRequest(req)
+    const isAllowedBanPath =
+      req.path === '/banned' ||
+      req.path.startsWith('/_next/') ||
+      req.path.startsWith('/images/') ||
+      req.path.startsWith('/favicon') ||
+      req.path === '/api/health'
+
+    if (ban && !isAllowedBanPath) {
+      if (req.path.startsWith('/api/')) {
+        res.status(403).json({ error: 'Banned', reason: ban.reason })
+        return
+      }
+
+      res.redirect(buildBannedUrl(ban.reason))
+      return
+    }
+
+    nextMiddleware()
+  })
   server.use(express.json())
   server.use(express.static(publicFolder))
 
-  const backend = new Backend(io)
+  const backend = new Backend(io, banManager)
 
   const getAdminApiKey = (req: express.Request) => {
     const bearer = req.headers.authorization?.startsWith('Bearer ')
@@ -80,6 +109,24 @@ app.prepare().then(async () => {
     return !!config.apiKey && getAdminApiKey(req) === config.apiKey
   }
 
+  const getAdminPassword = (req: express.Request) => {
+    const headerPassword = typeof req.headers['x-admin-password'] === 'string'
+      ? req.headers['x-admin-password']
+      : ''
+    const bodyPassword = typeof req.body?.adminPassword === 'string'
+      ? req.body.adminPassword
+      : ''
+    const queryPassword = typeof req.query?.adminPassword === 'string'
+      ? req.query.adminPassword
+      : ''
+
+    return headerPassword || bodyPassword || queryPassword
+  }
+
+  const hasAdminAccess = (req: express.Request) => {
+    return hasAdminApiKey(req) || (!!config.hostPassword && getAdminPassword(req) === config.hostPassword)
+  }
+
   const requireAdminApiKey = (
     req: express.Request,
     res: express.Response,
@@ -91,6 +138,19 @@ app.prepare().then(async () => {
     }
 
     if (getAdminApiKey(req) !== config.apiKey) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+
+    nextMiddleware()
+  }
+
+  const requireAdminAccess = (
+    req: express.Request,
+    res: express.Response,
+    nextMiddleware: express.NextFunction,
+  ) => {
+    if (!hasAdminAccess(req)) {
       res.status(401).json({ error: 'Unauthorized' })
       return
     }
@@ -222,6 +282,54 @@ app.prepare().then(async () => {
     })
   })
 
+  server.post('/api/admin/login', requireAdminAccess, (_req, res) => {
+    res.json({ ok: true })
+  })
+
+  server.get('/api/admin/state', requireAdminAccess, (req, res) => {
+    res.json({
+      ...backend.sessionManager.getAdminState(getOrigin(req)),
+      bans: banManager.list(),
+    })
+  })
+
+  server.delete('/api/admin/sessions/:sessionId', requireAdminAccess, (req, res) => {
+    res.json({
+      ok: backend.sessionManager.deleteSession(readRouteParam(req.params.sessionId)),
+    })
+  })
+
+  server.post('/api/admin/bans', requireAdminAccess, (req, res) => {
+    const socketId = typeof req.body?.socketId === 'string' ? req.body.socketId : ''
+    const target = socketId ? backend.sessionManager.findClient(socketId) : null
+    const reason = req.body?.reason || 'Banned by site moderation.'
+
+    try {
+      const ban = banManager.add({
+        reason,
+        sessionId: req.body?.sessionId || target?.session.id,
+        ipAddress: req.body?.ipAddress || target?.info.ipAddress,
+        visitorId: req.body?.visitorId || target?.info.visitorId,
+        name: req.body?.name || target?.info.name,
+      })
+
+      backend.sessionManager.disconnectMatchingClients((identity) => {
+        return !!banManager.findForIdentity(identity)
+      })
+
+      res.status(201).json({ ok: true, ban })
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Ban could not be created.' })
+    }
+  })
+
+  server.delete('/api/admin/bans/:banId', requireAdminAccess, (req, res) => {
+    res.json({
+      ok: banManager.delete(readRouteParam(req.params.banId)),
+      bans: banManager.list(),
+    })
+  })
+
   server.get('/api/sessions', (req, res) => {
     res.json({
       sessions: backend.sessionManager.listSessions({
@@ -232,11 +340,6 @@ app.prepare().then(async () => {
   })
 
   server.post('/api/sessions', (req, res) => {
-    if (req.body?.hostPassword !== config.hostPassword && !hasAdminApiKey(req)) {
-      res.status(401).json({ error: 'Only a host can create sessions.' })
-      return
-    }
-
     const session = backend.sessionManager.createSession({
       name: req.body?.name,
       isPublic: req.body?.isPublic !== false,
@@ -244,7 +347,10 @@ app.prepare().then(async () => {
 
     res.status(201).json({
       ok: true,
-      session: session.serialize(getOrigin(req)),
+      session: {
+        ...session.serialize(getOrigin(req)),
+        hostPassword: session.hostPassword,
+      },
     })
   })
 
@@ -261,7 +367,7 @@ app.prepare().then(async () => {
     const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
     if (!session) return
 
-    if (req.body?.hostPassword !== config.hostPassword && !hasAdminApiKey(req)) {
+    if (!session.validateHostPassword(req.body?.hostPassword || '') && !hasAdminAccess(req)) {
       res.status(401).json({ error: 'Only the host can update this session.' })
       return
     }
@@ -278,7 +384,7 @@ app.prepare().then(async () => {
     })
   })
 
-  server.delete('/api/sessions/:sessionId', requireAdminApiKey, (req, res) => {
+  server.delete('/api/sessions/:sessionId', requireAdminAccess, (req, res) => {
     res.json({
       ok: backend.sessionManager.deleteSession(readRouteParam(req.params.sessionId)),
     })

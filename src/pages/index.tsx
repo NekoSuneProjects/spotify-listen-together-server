@@ -50,7 +50,6 @@ function formatUpdatedAt(value: string) {
 const Index: NextPage = () => {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [name, setName] = useState('Listen Together Session');
-  const [hostPassword, setHostPassword] = useState('');
   const [isPublic, setIsPublic] = useState(true);
   const [invite, setInvite] = useState('');
   const [error, setError] = useState('');
@@ -101,7 +100,6 @@ const Index: NextPage = () => {
         body: JSON.stringify({
           name,
           isPublic,
-          hostPassword,
         }),
       });
       const data = await response.json();
@@ -111,7 +109,10 @@ const Index: NextPage = () => {
         return;
       }
 
-      window.location.href = data.session.url;
+      const hostPassword = data.session?.hostPassword;
+      window.location.href = hostPassword
+        ? `${data.session.url}?hostPassword=${encodeURIComponent(hostPassword)}`
+        : data.session.url;
     } catch {
       setError('Session could not be created.');
     } finally {
@@ -184,7 +185,7 @@ const Index: NextPage = () => {
             >
               <h2 className="text-xl font-black">Create Session</h2>
               <p className="mt-2 text-sm text-white/55">
-                Creating a session requires the host password. Public sessions show here; private sessions only work through their invite URL.
+                A private host password is generated for each session. Public sessions show here; private sessions only work through their invite URL.
               </p>
 
               <label className="mt-5 block text-sm text-white/70">
@@ -193,16 +194,6 @@ const Index: NextPage = () => {
                   className="mt-2 w-full rounded-lg border border-white/10 bg-black/35 px-3 py-3 text-white outline-none focus:border-spotify-400"
                   value={name}
                   onChange={(event) => setName(event.currentTarget.value)}
-                />
-              </label>
-
-              <label className="mt-4 block text-sm text-white/70">
-                Host password
-                <input
-                  className="mt-2 w-full rounded-lg border border-white/10 bg-black/35 px-3 py-3 text-white outline-none focus:border-spotify-400"
-                  type="password"
-                  value={hostPassword}
-                  onChange={(event) => setHostPassword(event.currentTarget.value)}
                 />
               </label>
 

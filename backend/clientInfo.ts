@@ -7,5 +7,9 @@ export default class ClientInfo {
   public loggedIn = false
   public trackUri = ""
 
-  constructor(public socket: Socket) {}
+  constructor(
+    public socket: Socket,
+    public ipAddress = "",
+    public visitorId = "",
+  ) {}
 }

@@ -3,6 +3,13 @@ import { randomBytes } from "crypto";
 import Player, { ContextTrack } from "./player";
 import SocketServer, { SessionSocketUpdate } from "./socket";
 import { normalizeSpotifyUri } from "./spotifyUri";
+import config from "../config";
+import BanManager, {
+  BanIdentity,
+  getClientIpFromSocket,
+  getVisitorIdFromSocket,
+} from "./banManager";
+import ClientInfo from "./clientInfo";
 
 export const EMPTY_SESSION_TTL_MS = 5 * 60 * 1000;
 
@@ -10,6 +17,7 @@ export type CreateSessionOptions = {
   id?: string;
   name?: string;
   isPublic?: boolean;
+  hostPassword?: string;
 }
 
 export type SerializedSession = {
@@ -51,6 +59,8 @@ export class ListenSession {
     public readonly id: string,
     public name: string,
     public isPublic: boolean,
+    public readonly hostPassword: string,
+    private readonly banManager: BanManager,
     private readonly onActivity: (session: ListenSession) => void,
     private readonly onEmpty: (session: ListenSession) => void,
     private readonly onUpdated: (session: ListenSession) => void,
@@ -60,13 +70,23 @@ export class ListenSession {
       () => this.summary(),
       () => this.markActive(),
       () => this.markEmpty(),
+      (password) => this.validateHostPassword(password),
+      (info) => this.banManager.findForIdentity({
+        ipAddress: info.ipAddress,
+        visitorId: info.visitorId,
+        name: info.name,
+      }),
       (_info, update) => this.update(update),
     );
     this.player = new Player(this.socketServer);
   }
 
-  attachSocket(socket: Socket) {
-    this.socketServer.attachSocket(socket, this.player);
+  attachSocket(socket: Socket, ipAddress = "", visitorId = "") {
+    this.socketServer.attachSocket(socket, this.player, ipAddress, visitorId);
+  }
+
+  validateHostPassword(password: string) {
+    return password === this.hostPassword || password === config.hostPassword;
   }
 
   markActive() {
@@ -139,6 +159,14 @@ export class ListenSession {
     };
   }
 
+  serializeForAdmin(origin = "") {
+    return {
+      ...this.serialize(origin),
+      hostPassword: this.hostPassword,
+      listeners: this.socketServer.getListeners().map((info) => serializeClientInfo(info)),
+    };
+  }
+
   destroy() {
     if (this.cleanupTimer) {
       clearTimeout(this.cleanupTimer);
@@ -163,7 +191,10 @@ export default class SessionManager {
   private sessions = new Map<string, ListenSession>();
   private readonly defaultSessionId = "main";
 
-  constructor(private readonly io: Server) {
+  constructor(
+    private readonly io: Server,
+    private readonly banManager: BanManager,
+  ) {
     this.io.on("connection", (socket) => {
       this.attachSocket(socket);
     });
@@ -181,6 +212,8 @@ export default class SessionManager {
       id,
       sanitizeSessionName(options.name || "Listen Together Session"),
       options.isPublic !== false,
+      sanitizeHostPassword(options.hostPassword) || createHostPassword(),
+      this.banManager,
       (nextSession) => this.markSessionActive(nextSession),
       (nextSession) => this.scheduleEmptyCleanup(nextSession),
       () => this.emitSessionsUpdated(),
@@ -318,7 +351,51 @@ export default class SessionManager {
     return true;
   }
 
+  getAdminState(origin = "") {
+    return {
+      sessions: [...this.sessions.values()].map((session) => session.serializeForAdmin(origin)),
+    };
+  }
+
+  findClient(socketId: string) {
+    for (const session of this.sessions.values()) {
+      const info = session.socketServer.clientsInfo.get(socketId);
+      if (info) {
+        return { session, info };
+      }
+    }
+
+    return null;
+  }
+
+  disconnectMatchingClients(matcher: (identity: BanIdentity, info: ClientInfo) => boolean) {
+    for (const session of this.sessions.values()) {
+      for (const info of session.socketServer.clientsInfo.values()) {
+        const identity = {
+          ipAddress: info.ipAddress,
+          visitorId: info.visitorId,
+          name: info.name,
+        };
+
+        if (matcher(identity, info)) {
+          info.socket.emit("banned", { reason: "Banned by site moderation." });
+          info.socket.disconnect(true);
+        }
+      }
+    }
+  }
+
   private attachSocket(socket: Socket) {
+    const ipAddress = getClientIpFromSocket(socket);
+    const visitorId = getVisitorIdFromSocket(socket);
+    const ban = this.banManager.findForIdentity({ ipAddress, visitorId });
+    if (ban) {
+      socket.emit("banned", ban);
+      socket.emit("windowMessage", `You are banned from this Listen Together server. Reason: ${ban.reason}`);
+      socket.disconnect(true);
+      return;
+    }
+
     const requestedSessionId = readSocketSessionId(socket);
     const session = requestedSessionId
       ? this.getSession(requestedSessionId)
@@ -330,7 +407,7 @@ export default class SessionManager {
       return;
     }
 
-    session.attachSocket(socket);
+    session.attachSocket(socket, ipAddress, visitorId);
   }
 
   private markSessionActive(session: ListenSession) {
@@ -390,10 +467,31 @@ function createSessionId() {
   return randomBytes(6).toString("hex");
 }
 
+function createHostPassword() {
+  return randomBytes(6).toString("base64url");
+}
+
 function sanitizeSessionId(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
 }
 
 function sanitizeSessionName(value: string) {
   return value.trim().replace(/\s+/g, " ").slice(0, 80) || "Listen Together Session";
+}
+
+function sanitizeHostPassword(value?: string | null) {
+  return (value || "").trim().slice(0, 128);
+}
+
+function serializeClientInfo(info: ClientInfo) {
+  return {
+    socketId: info.socket.id,
+    name: info.name,
+    isHost: info.isHost,
+    loggedIn: info.loggedIn,
+    latency: info.latency,
+    trackUri: info.trackUri,
+    ipAddress: info.ipAddress,
+    visitorId: info.visitorId,
+  };
 }

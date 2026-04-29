@@ -3,6 +3,7 @@ import ClientInfo from "./clientInfo";
 import config from "../config";
 import ClientVersionValidator from './clientVersionValidator';
 import Player, { ContextTrack } from "./player";
+import type { BanMatch } from "./banManager";
 
 export type SessionSocketUpdate = {
   name?: string;
@@ -21,6 +22,9 @@ type SessionUpdateHandler = (
   update: SessionSocketUpdate,
 ) => SessionSocketSummary | null;
 
+type HostPasswordValidator = (password: string) => boolean;
+type ClientBanChecker = (info: ClientInfo) => BanMatch | null;
+
 export default class SocketServer {
   clientsInfo = new Map<string, ClientInfo>()
   private player: Player | undefined
@@ -31,6 +35,8 @@ export default class SocketServer {
     private readonly getSessionSummary: () => SessionSocketSummary,
     private readonly onActivity: () => void,
     private readonly onEmpty: () => void,
+    private readonly validateHostPassword: HostPasswordValidator,
+    private readonly getClientBan?: ClientBanChecker,
     private readonly onUpdateSession?: SessionUpdateHandler,
   ) {}
 
@@ -118,10 +124,10 @@ export default class SocketServer {
     })
   }
 
-  attachSocket(socket: Socket, player: Player) {
+  attachSocket(socket: Socket, player: Player, ipAddress = "", visitorId = "") {
     this.player = player
     let lastPing = 0
-    let info = new ClientInfo(socket)
+    let info = new ClientInfo(socket, ipAddress, visitorId)
     this.clientsInfo.set(socket.id, info)
     socket.emit("sessionInfo", this.getSessionSummary())
 
@@ -143,6 +149,15 @@ export default class SocketServer {
     socket.on("login", (name: string, clientVersion?: string, badVersion?: (requirements: string) => void) => {
       if (this.clientVersionValidator.validate(clientVersion)) {
         info.name = name
+
+        const ban = this.getClientBan?.(info)
+        if (ban) {
+          socket.emit("banned", ban)
+          socket.emit("windowMessage", `You are banned from this Listen Together server. Reason: ${ban.reason}`)
+          setTimeout(() => socket.disconnect(true), 250)
+          return
+        }
+
         info.loggedIn = true;
         this.onActivity()
         this.player?.listenerLoggedIn(info)
@@ -162,7 +177,7 @@ export default class SocketServer {
     })
 
     socket.on("requestHost", (password: string) => {
-      if (password === config.hostPassword) {
+      if (this.validateHostPassword(password)) {
         this.updateHost(info, true);
         socket.emit("bottomMessage", "Host permissions acquired.", true)
       } else {

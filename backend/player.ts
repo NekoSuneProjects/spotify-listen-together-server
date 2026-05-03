@@ -219,6 +219,15 @@ export default class Player {
     }
   }
 
+  getSongSnapshot() {
+    return {
+      ...this.songInfo,
+      locked: this.locked,
+      loading: this.loadingTrack !== null,
+      ...this.getProgressSnapshot(),
+    }
+  }
+
   /*
     Requests
   */
@@ -349,7 +358,7 @@ export default class Player {
   }
   
   onRequestSongInfo(info: ClientInfo) {
-    info.socket.emit("songInfo", this.songInfo)
+    info.socket.emit("songInfo", this.getSongSnapshot())
   }
 
   onRequestQueue(info: ClientInfo) {
@@ -392,12 +401,7 @@ export default class Player {
 
     this.songInfo.trackUri = this.trackUri
     this.songInfo.paused = this.paused
-    this.socketServer.emitToNonListeners("songInfo", {
-      ...this.songInfo,
-      locked: this.locked,
-      loading: this.loadingTrack !== null,
-      ...this.getProgressSnapshot(),
-    })
+    this.socketServer.emitToNonListeners("songInfo", this.getSongSnapshot())
     this.scheduleQueueAdvance()
     this.notifyStateChanged()
   }

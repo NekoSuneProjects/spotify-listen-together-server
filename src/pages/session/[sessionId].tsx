@@ -435,6 +435,8 @@ const SessionPage: NextPage = () => {
               <div className="rounded-lg border border-white/10 bg-black/30 p-5 text-sm text-white/60">
                 <div className="font-semibold text-white">Integration URLs</div>
                 <div className="mt-3 space-y-2 break-all font-mono text-xs">
+                  <div>{`/session/${sessionId}/overlay?style=default`}</div>
+                  <div>{`/overlay/${sessionId}?style=discord`}</div>
                   <div>{`/api/sessions/${sessionId}/nowplaying`}</div>
                   <div>{`/api/sessions/${sessionId}/request`}</div>
                   <div>{`/api/sessions/${sessionId}/twitch/request`}</div>

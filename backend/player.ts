@@ -21,6 +21,8 @@ export default class Player {
   public songInfo = new SongInfo()
   public loadAtMilliseconds = 0;
   public queue: ContextTrack[] = [];
+  private lastAcceptedProgressUpdateAt = 0
+  private lastDesyncResyncAt = 0
   
   constructor(
     public socketServer: SocketServer,
@@ -43,13 +45,39 @@ export default class Player {
   /*
     Commands
   */
-  updateSong(pause: boolean, milliseconds: number, exceptSocketId?: string) {
+  updateSong(
+    pause: boolean,
+    milliseconds: number,
+    exceptSocketId?: string,
+    options: { force?: boolean } = {},
+  ) {
     if (this.loadingTrack === null && Player.isTrackListenable(this.trackUri)) {
+      const now = Date.now()
+      const currentProgress = this.getTrackProgress()
+      const pauseChanged = this.paused !== pause
+      const driftMs = Math.abs(milliseconds - currentProgress)
+      const shouldBroadcast =
+        options.force ||
+        pauseChanged ||
+        driftMs >= config.progressUpdateDriftToleranceMs
+      const shouldRebaseProgress =
+        shouldBroadcast ||
+        now - this.lastAcceptedProgressUpdateAt >= config.progressUpdateMinIntervalMs
+
+      if (!shouldRebaseProgress) {
+        return true
+      }
+
       this.paused = pause
       this.milliseconds = milliseconds
-      this.millisecondsLastUpdate = Date.now()
-      this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds], exceptSocketId)
-      this.updateSongInfo()
+      this.millisecondsLastUpdate = now
+      this.lastAcceptedProgressUpdateAt = now
+
+      if (shouldBroadcast) {
+        this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds], exceptSocketId)
+        this.updateSongInfo(undefined, { force: true })
+      }
+
       this.scheduleQueueAdvance()
       this.loadAtMilliseconds = 0;
       return true
@@ -64,14 +92,16 @@ export default class Player {
       
       this.milliseconds = 0
       this.millisecondsLastUpdate = Date.now()
+      this.lastAcceptedProgressUpdateAt = this.millisecondsLastUpdate
       this.paused = false
       this.trackUri = trackUri
-      this.songInfo.trackUri = trackUri
       this.socketServer.emitToListeners("changeSong", [trackUri], exceptSocketId)
       this.notifyStateChanged()
       this.clearQueueAdvanceTimer()
       this.loadingTrack = setTimeout(() => {
-        console.log("Timed out for loading track!")
+        if (config.debugPlayback) {
+          console.log("Timed out for loading track!")
+        }
         this.trackLoaded()
       }, config.maxDelay)
     }
@@ -222,6 +252,8 @@ export default class Player {
   getSongSnapshot() {
     return {
       ...this.songInfo,
+      trackUri: this.trackUri,
+      paused: this.paused,
       locked: this.locked,
       loading: this.loadingTrack !== null,
       ...this.getProgressSnapshot(),
@@ -307,7 +339,9 @@ export default class Player {
   */
   checkTrackLoaded() {
     if (this.socketServer.getListeners().every((info) => info.trackUri === this.trackUri)) {
-      console.log(this.loadAtMilliseconds)
+      if (config.debugPlayback) {
+        console.log(this.loadAtMilliseconds)
+      }
       this.trackLoaded()
     }
   }
@@ -320,7 +354,15 @@ export default class Player {
   checkDesynchronizedListeners() {
     if (this.loadingTrack === null) {
       if (this.socketServer.getListeners().some((info) => info.trackUri !== this.trackUri)) {
-        console.trace()
+        const now = Date.now()
+        if (now - this.lastDesyncResyncAt < config.maxDelay) {
+          return
+        }
+
+        this.lastDesyncResyncAt = now
+        if (config.debugPlayback) {
+          console.trace()
+        }
         this.loadAtMilliseconds = this.getTrackProgress()
         this.changeSong(this.trackUri)
       }
@@ -337,14 +379,18 @@ export default class Player {
     let milliseconds = this.loadAtMilliseconds
     this.loadAtMilliseconds = 0
     setTimeout(() => {
-      console.log(`====== ${milliseconds}  ${this.trackUri}`)
-      this.requestUpdateSong(undefined, false, milliseconds)
+      if (config.debugPlayback) {
+        console.log(`====== ${milliseconds}  ${this.trackUri}`)
+      }
+      this.updateSong(false, milliseconds, undefined, { force: true })
     }, 1000)
   }
 
   lock(lock: boolean) {
-    console.log("LOCKING: " + lock)
     if (this.locked != lock) {
+      if (config.debugPlayback) {
+        console.log("LOCKING: " + lock)
+      }
       this.locked = lock
       if (this.locked) {
         // this.updateSong(true, 0)
@@ -371,42 +417,79 @@ export default class Player {
     this.paused = true
     this.milliseconds = 0
     this.songInfo = new SongInfo()
-    this.updateSongInfo()
+    this.updateSongInfo(undefined, { force: true })
   }
   
-  updateSongInfo(newSongInfo?: Partial<SongInfo>) {
-    if (newSongInfo?.name != undefined)
-      this.songInfo.name = newSongInfo.name
+  updateSongInfo(newSongInfo?: Partial<SongInfo>, options: { force?: boolean } = {}) {
+    let changed = false
 
-    if (newSongInfo?.image != undefined) {
-      if (newSongInfo.image.startsWith("http"))
-        this.songInfo.image = newSongInfo.image
-      else if ((newSongInfo.image.match(/:/g) || []).length === 2)
-        this.songInfo.image = "https://i.scdn.co/image/" + newSongInfo.image.split(":")[2]
-      else
-        this.songInfo.image = ""
+    if (newSongInfo?.name != undefined && this.songInfo.name !== newSongInfo.name) {
+      this.songInfo.name = newSongInfo.name
+      changed = true
     }
 
-    if (newSongInfo?.artistName != undefined)
+    if (newSongInfo?.image != undefined) {
+      let image = ""
+      if (newSongInfo.image.startsWith("http"))
+        image = newSongInfo.image
+      else if ((newSongInfo.image.match(/:/g) || []).length === 2)
+        image = "https://i.scdn.co/image/" + newSongInfo.image.split(":")[2]
+
+      if (this.songInfo.image !== image) {
+        this.songInfo.image = image
+        changed = true
+      }
+    }
+
+    if (newSongInfo?.artistName != undefined && this.songInfo.artistName !== newSongInfo.artistName) {
       this.songInfo.artistName = newSongInfo.artistName
+      changed = true
+    }
 
-    if (newSongInfo?.artists != undefined)
+    if (newSongInfo?.artists != undefined && !areStringArraysEqual(this.songInfo.artists, newSongInfo.artists)) {
       this.songInfo.artists = newSongInfo.artists
+      changed = true
+    }
 
-    if (newSongInfo?.albumName != undefined)
+    if (newSongInfo?.albumName != undefined && this.songInfo.albumName !== newSongInfo.albumName) {
       this.songInfo.albumName = newSongInfo.albumName
+      changed = true
+    }
 
-    if (newSongInfo?.durationMs != undefined)
+    if (newSongInfo?.durationMs != undefined && this.songInfo.durationMs !== newSongInfo.durationMs) {
       this.songInfo.durationMs = newSongInfo.durationMs
+      changed = true
+    }
 
-    this.songInfo.trackUri = this.trackUri
-    this.songInfo.paused = this.paused
+    if (this.songInfo.trackUri !== this.trackUri) {
+      this.songInfo.trackUri = this.trackUri
+      changed = true
+    }
+
+    if (this.songInfo.paused !== this.paused) {
+      this.songInfo.paused = this.paused
+      changed = true
+    }
+
+    if (!changed && !options.force) {
+      return false
+    }
+
     this.socketServer.emitToNonListeners("songInfo", this.getSongSnapshot())
     this.scheduleQueueAdvance()
     this.notifyStateChanged()
+    return true
   }
 
   private notifyStateChanged() {
     this.onStateChanged()
   }
+}
+
+function areStringArraysEqual(a: string[], b: string[]) {
+  if (a.length !== b.length) {
+    return false
+  }
+
+  return a.every((value, index) => value === b[index])
 }

@@ -182,10 +182,6 @@ const SessionPage: NextPage = () => {
       setState((current) => (current ? { ...current, queue: [] } : current));
     });
 
-    socket.on('sessionsUpdated', () => {
-      loadState();
-    });
-
     socket.on('sessionDeleted', () => {
       setNotFound(true);
     });

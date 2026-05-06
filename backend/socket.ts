@@ -41,11 +41,25 @@ export default class SocketServer {
   ) {}
 
   getListeners() {
-    return [...this.clientsInfo.values()].filter((info: ClientInfo) => info.loggedIn)
+    const listeners: ClientInfo[] = []
+
+    for (const info of this.clientsInfo.values()) {
+      if (info.loggedIn) {
+        listeners.push(info)
+      }
+    }
+
+    return listeners
   }
 
   getHost(): ClientInfo | null {
-    return [...this.clientsInfo.values()].find((info) => info.isHost) || null
+    for (const info of this.clientsInfo.values()) {
+      if (info.isHost) {
+        return info
+      }
+    }
+
+    return null
   }
 
   getPlaybackLeader(): ClientInfo | null {
@@ -59,9 +73,11 @@ export default class SocketServer {
   }
 
   emitToNonListeners(ev: string, ...args: any) {
-    [...this.clientsInfo.values()].filter((info: ClientInfo) => !info.loggedIn).forEach(info => {
-      info.socket.emit(ev, ...args)
-    })
+    for (const info of this.clientsInfo.values()) {
+      if (!info.loggedIn) {
+        info.socket.emit(ev, ...args)
+      }
+    }
   }
 
   emitToListeners(ev: string, args: any[] = [], exceptSocketId?: string) {
@@ -77,7 +93,12 @@ export default class SocketServer {
         return
       }
 
-      let delay = ((maxLatency - minLatency) - (info.latency - minLatency))
+      let delay = Math.max(((maxLatency - minLatency) - (info.latency - minLatency)), 0)
+      if (delay === 0) {
+        info.socket.emit(ev, ...args)
+        return
+      }
+
       setTimeout(() => {
         info.socket.emit(ev, ...args)
       }, delay)
@@ -137,9 +158,11 @@ export default class SocketServer {
       }
     });
 
-    socket.onAny((ev: string, ...args: any) => {
-      console.log(`Receiving ${ev}(session=${this.sessionId}, host=${info.isHost}): ${args}`)
-    })
+    if (config.debugSocketEvents) {
+      socket.onAny((ev: string, ...args: any) => {
+        console.log(`Receiving ${ev}(session=${this.sessionId}, host=${info.isHost}): ${args}`)
+      })
+    }
 
     socket.conn.on('packetCreate', function (packet) {
       if (packet.type === 'ping')
@@ -163,7 +186,9 @@ export default class SocketServer {
         this.player?.listenerLoggedIn(info)
         this.sendListeners()
         this.sendPlaybackLeader()
-        console.log(`Sending queue to ${name}`)
+        if (config.debugSocketEvents) {
+          console.log(`Sending queue to ${name}`)
+        }
         socket.emit('queueUpdate', this.player?.getQueue())
         socket.emit("sessionInfo", this.getSessionSummary())
       } else {

@@ -14,6 +14,12 @@ Supported environment variables:
 - `PORT`
 - `API_KEY`
 - `FALLBACK_PLAYLIST_URI`
+- `SOCKET_PING_INTERVAL_MS` default `10000`
+- `SOCKET_PING_TIMEOUT_MS` default `20000`
+- `PROGRESS_UPDATE_MIN_INTERVAL_MS` default `5000`
+- `PROGRESS_UPDATE_DRIFT_TOLERANCE_MS` default `1500`
+- `DEBUG_SOCKET_EVENTS` default `false`
+- `DEBUG_PLAYBACK` default `false`
 
 The server now loads `.env` on startup for local development and production runs started from the project root.
 

@@ -492,10 +492,6 @@ const NowPlayingOverlay = () => {
       }));
     });
 
-    socket.on('sessionsUpdated', () => {
-      loadState();
-    });
-
     socket.on('sessionDeleted', () => {
       setNotFound(true);
       setState(null);

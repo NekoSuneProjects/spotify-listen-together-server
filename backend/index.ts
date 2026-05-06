@@ -40,7 +40,8 @@ app.prepare().then(async () => {
     cors: {
       origin: '*'
     },
-    pingInterval: 1000
+    pingInterval: config.socketPingIntervalMs,
+    pingTimeout: config.socketPingTimeoutMs,
   })
 
   let publicFolder = __dirname

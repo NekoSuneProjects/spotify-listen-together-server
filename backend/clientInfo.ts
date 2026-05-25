@@ -6,6 +6,7 @@ export default class ClientInfo {
   public isHost = false
   public loggedIn = false
   public trackUri = ""
+  public trackUriUpdatedAt = Date.now()
 
   constructor(
     public socket: Socket,

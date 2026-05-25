@@ -4,6 +4,7 @@ import config from "../config";
 import ClientVersionValidator from './clientVersionValidator';
 import Player, { ContextTrack } from "./player";
 import type { BanMatch } from "./banManager";
+import { normalizeSpotifyUri } from "./spotifyUri";
 
 export type SessionSocketUpdate = {
   name?: string;
@@ -72,7 +73,7 @@ export default class SocketServer {
     })
   }
 
-  emitToNonListeners(ev: string, ...args: any) {
+  emitToNonListeners(ev: string, ...args: any[]) {
     for (const info of this.clientsInfo.values()) {
       if (!info.loggedIn) {
         info.socket.emit(ev, ...args)
@@ -81,27 +82,12 @@ export default class SocketServer {
   }
 
   emitToListeners(ev: string, args: any[] = [], exceptSocketId?: string) {
-    let listeners = this.getListeners()
-    let maxLatency = 0
-    let minLatency = config.maxDelay
-    listeners.forEach(info => {
-      maxLatency = Math.max(info.latency, maxLatency)
-      minLatency = Math.min(info.latency, minLatency)
-    })
-    listeners.forEach(info => {
+    this.getListeners().forEach(info => {
       if (exceptSocketId && info.socket.id === exceptSocketId) {
         return
       }
 
-      let delay = Math.max(((maxLatency - minLatency) - (info.latency - minLatency)), 0)
-      if (delay === 0) {
-        info.socket.emit(ev, ...args)
-        return
-      }
-
-      setTimeout(() => {
-        info.socket.emit(ev, ...args)
-      }, delay)
+      info.socket.emit(ev, ...args)
     });
   }
 
@@ -149,8 +135,26 @@ export default class SocketServer {
     this.player = player
     let lastPing = 0
     let info = new ClientInfo(socket, ipAddress, visitorId)
+    const eventBuckets = new Map<string, { count: number; resetAt: number }>()
     this.clientsInfo.set(socket.id, info)
     socket.emit("sessionInfo", this.getSessionSummary())
+
+    const isRateLimited = (name: string, limit = config.socketQueueEventLimit, windowMs = 60_000) => {
+      const now = Date.now()
+      const bucket = eventBuckets.get(name)
+
+      if (!bucket || bucket.resetAt <= now) {
+        eventBuckets.set(name, { count: 1, resetAt: now + windowMs })
+        return false
+      }
+
+      bucket.count += 1
+      return bucket.count > limit
+    }
+
+    const rejectQueueMutation = () => {
+      socket.emit("bottomMessage", "Only the host or playback leader can change the shared queue.", true)
+    }
 
     socket.conn.on('packet', function (packet) {
       if (packet.type === 'pong') {
@@ -260,17 +264,31 @@ export default class SocketServer {
     socket.on("requestSong", (trackUri: string, trackName: string, metadata?: any) => {
       const host = this.getHost()
       this.onActivity()
-
-      if (host) {
-        host.socket.emit("songRequested", trackUri, trackName, info.name)
-        socket.emit("bottomMessage", `Sent "${trackName}" to the host.`, true)
+      if (isRateLimited("requestSong")) {
+        socket.emit("bottomMessage", "You are sending requests too quickly.", true)
         return
       }
 
-      this.player?.addToQueue([{
-        uri: trackUri,
+      const normalizedTrackUri = normalizeSpotifyUri(trackUri)
+      if (!Player.isTrackListenable(normalizedTrackUri)) {
+        socket.emit("bottomMessage", "Only Spotify tracks and episodes can be requested.", true)
+        return
+      }
+
+      const safeTrackName = typeof trackName === "string" && trackName.trim()
+        ? trackName.trim().slice(0, 200)
+        : normalizedTrackUri
+
+      if (host) {
+        host.socket.emit("songRequested", normalizedTrackUri, safeTrackName, info.name)
+        socket.emit("bottomMessage", `Sent "${safeTrackName}" to the host.`, true)
+        return
+      }
+
+      const queued = this.player?.addToQueue([{
+        uri: normalizedTrackUri,
         metadata: {
-          title: trackName,
+          title: safeTrackName,
           artist_name: metadata?.artist_name || metadata?.artistName || "",
           album_title: metadata?.album_title || metadata?.albumName || "",
           image_url: metadata?.image_url || metadata?.image || "",
@@ -278,7 +296,12 @@ export default class SocketServer {
         }
       }])
 
-      socket.emit("bottomMessage", `Queued "${trackName}".`, true)
+      if (!queued) {
+        socket.emit("bottomMessage", "The queue is full or the request was invalid.", true)
+        return
+      }
+
+      socket.emit("bottomMessage", `Queued "${safeTrackName}".`, true)
     })
 
     socket.on("requestQueue", () => {
@@ -287,16 +310,48 @@ export default class SocketServer {
 
     socket.on("addToQueue", (tracks: ContextTrack[]) => {
       this.onActivity()
-      this.player?.addToQueue(tracks);
+      if (isRateLimited("addToQueue")) {
+        socket.emit("bottomMessage", "You are changing the queue too quickly.", true)
+        return
+      }
+
+      if (!this.player?.canMutateQueue(info)) {
+        rejectQueueMutation()
+        return
+      }
+
+      if (!this.player.addToQueue(tracks)) {
+        socket.emit("bottomMessage", "The queue is full or the submitted tracks were invalid.", true)
+      }
     });
 
     socket.on("removeFromQueue", (tracks: ContextTrack[]) => {
       this.onActivity()
+      if (isRateLimited("removeFromQueue")) {
+        socket.emit("bottomMessage", "You are changing the queue too quickly.", true)
+        return
+      }
+
+      if (!this.player?.canMutateQueue(info)) {
+        rejectQueueMutation()
+        return
+      }
+
       this.player?.removeFromQueue(tracks);
     });
 
     socket.on("clearQueue", () => {
       this.onActivity()
+      if (isRateLimited("clearQueue")) {
+        socket.emit("bottomMessage", "You are changing the queue too quickly.", true)
+        return
+      }
+
+      if (!this.player?.canMutateQueue(info)) {
+        rejectQueueMutation()
+        return
+      }
+
       this.player?.clearQueue();
     });
 
@@ -309,7 +364,6 @@ export default class SocketServer {
         this.sendListeners()
         this.sendPlaybackLeader()
         if (this.getListeners().length === 0) {
-          this.player?.onNoListeners()
           this.onEmpty()
         } else {
           this.onActivity()

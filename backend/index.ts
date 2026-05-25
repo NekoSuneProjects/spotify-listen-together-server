@@ -3,6 +3,7 @@ import next from 'next'
 import http from 'http'
 import { Server } from 'socket.io'
 import path from 'path'
+import { timingSafeEqual } from 'crypto'
 import './loadEnv'
 import { normalizeSpotifyUri } from './spotifyUri'
 import { ListenSession, getOrigin } from './sessionManager'
@@ -25,6 +26,20 @@ function readIntEnv(name: string, fallback: number) {
   return Number.isNaN(parsed) ? fallback : parsed
 }
 
+function safeCompareSecret(left: string, right: string) {
+  if (!left || !right) {
+    return false
+  }
+
+  const leftBuffer = Buffer.from(left)
+  const rightBuffer = Buffer.from(right)
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer)
+}
+
 const port = readIntEnv('PORT', 3000)
 const dev = process.env.NODE_ENV !== 'production'
 const app = next({ dev })
@@ -44,6 +59,33 @@ app.prepare().then(async () => {
     pingTimeout: config.socketPingTimeoutMs,
   })
 
+  const createRateLimiter = (limit: number, windowMs: number) => {
+    const buckets = new Map<string, { count: number; resetAt: number }>()
+
+    return (req: express.Request, res: express.Response, nextMiddleware: express.NextFunction) => {
+      const key = req.ip || req.socket.remoteAddress || 'unknown'
+      const now = Date.now()
+      const bucket = buckets.get(key)
+
+      if (!bucket || bucket.resetAt <= now) {
+        buckets.set(key, { count: 1, resetAt: now + windowMs })
+        nextMiddleware()
+        return
+      }
+
+      bucket.count += 1
+      if (bucket.count > limit) {
+        res.status(429).json({ error: 'Too many requests.' })
+        return
+      }
+
+      nextMiddleware()
+    }
+  }
+
+  const sessionCreateRateLimit = createRateLimiter(config.apiSessionCreateLimit, 60_000)
+  const requestSongRateLimit = createRateLimiter(config.apiRequestLimit, 60_000)
+
   let publicFolder = __dirname
   let distPos = publicFolder.lastIndexOf("dist");
   if (distPos != -1)
@@ -57,6 +99,7 @@ app.prepare().then(async () => {
     res.header('Access-Control-Allow-Origin', '*')
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, X-Admin-Password')
     res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
+    res.header('Referrer-Policy', 'no-referrer')
 
     if (req.method === 'OPTIONS') {
       res.sendStatus(204)
@@ -105,7 +148,7 @@ app.prepare().then(async () => {
   }
 
   const hasAdminApiKey = (req: express.Request) => {
-    return !!config.apiKey && getAdminApiKey(req) === config.apiKey
+    return !!config.apiKey && safeCompareSecret(getAdminApiKey(req), config.apiKey)
   }
 
   const getAdminPassword = (req: express.Request) => {
@@ -123,7 +166,8 @@ app.prepare().then(async () => {
   }
 
   const hasAdminAccess = (req: express.Request) => {
-    return hasAdminApiKey(req) || (!!config.hostPassword && getAdminPassword(req) === config.hostPassword)
+    return hasAdminApiKey(req) ||
+      (!!config.adminPassword && safeCompareSecret(getAdminPassword(req), config.adminPassword))
   }
 
   const requireAdminApiKey = (
@@ -136,7 +180,7 @@ app.prepare().then(async () => {
       return
     }
 
-    if (getAdminApiKey(req) !== config.apiKey) {
+    if (!safeCompareSecret(getAdminApiKey(req), config.apiKey)) {
       res.status(401).json({ error: 'Unauthorized' })
       return
     }
@@ -224,6 +268,11 @@ app.prepare().then(async () => {
     }
 
     const result = backend.sessionManager.addRequestToSession(session, track, requestedBy)
+    if (!result.accepted) {
+      res.status(429).json({ error: 'The queue is full or the request was invalid.', ...result })
+      return
+    }
+
     res.json({
       ok: true,
       session: session.serialize(getOrigin(req)),
@@ -251,7 +300,10 @@ app.prepare().then(async () => {
       return
     }
 
-    session.player.addToQueue(tracks)
+    if (!session.player.addToQueue(tracks)) {
+      res.status(429).json({ error: 'The queue is full or the submitted tracks were invalid.' })
+      return
+    }
 
     if (playNow && !hasHost) {
       session.player.playNextQueuedTrack()
@@ -288,7 +340,7 @@ app.prepare().then(async () => {
   server.get('/api/admin/state', requireAdminAccess, (req, res) => {
     res.json({
       ...backend.sessionManager.getAdminState(getOrigin(req)),
-      bans: banManager.list(),
+      bans: banManager.list({ redact: true }),
     })
   })
 
@@ -316,7 +368,14 @@ app.prepare().then(async () => {
         return !!banManager.findForIdentity(identity)
       })
 
-      res.status(201).json({ ok: true, ban })
+      res.status(201).json({
+        ok: true,
+        ban: {
+          ...ban,
+          ipAddress: ban.ipAddress ? 'masked' : '',
+          visitorId: ban.visitorId ? `${ban.visitorId.slice(0, 6)}...` : '',
+        },
+      })
     } catch (error: any) {
       res.status(400).json({ error: error?.message || 'Ban could not be created.' })
     }
@@ -325,7 +384,7 @@ app.prepare().then(async () => {
   server.delete('/api/admin/bans/:banId', requireAdminAccess, (req, res) => {
     res.json({
       ok: banManager.delete(readRouteParam(req.params.banId)),
-      bans: banManager.list(),
+      bans: banManager.list({ redact: true }),
     })
   })
 
@@ -338,11 +397,17 @@ app.prepare().then(async () => {
     })
   })
 
-  server.post('/api/sessions', (req, res) => {
-    const session = backend.sessionManager.createSession({
-      name: req.body?.name,
-      isPublic: req.body?.isPublic !== false,
-    })
+  server.post('/api/sessions', sessionCreateRateLimit, (req, res) => {
+    let session: ListenSession
+    try {
+      session = backend.sessionManager.createSession({
+        name: req.body?.name,
+        isPublic: req.body?.isPublic !== false,
+      })
+    } catch (error: any) {
+      res.status(503).json({ error: error?.message || 'Session could not be created.' })
+      return
+    }
 
     res.status(201).json({
       ok: true,
@@ -477,31 +542,31 @@ app.prepare().then(async () => {
     res.json(serializeState(session, req))
   })
 
-  server.post('/api/request', (req, res) => {
+  server.post('/api/request', requestSongRateLimit, (req, res) => {
     const session = getSessionOr404(req, res)
     if (!session) return
     handleRequestSong(req, res, session)
   })
 
-  server.post('/api/twitch/request', (req, res) => {
+  server.post('/api/twitch/request', requestSongRateLimit, (req, res) => {
     const session = getSessionOr404(req, res)
     if (!session) return
     handleRequestSong(req, res, session)
   })
 
-  server.post('/api/sessions/:sessionId/request', (req, res) => {
+  server.post('/api/sessions/:sessionId/request', requestSongRateLimit, (req, res) => {
     const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
     if (!session) return
     handleRequestSong(req, res, session)
   })
 
-  server.post('/api/sessions/:sessionId/requests', (req, res) => {
+  server.post('/api/sessions/:sessionId/requests', requestSongRateLimit, (req, res) => {
     const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
     if (!session) return
     handleRequestSong(req, res, session)
   })
 
-  server.post('/api/sessions/:sessionId/twitch/request', (req, res) => {
+  server.post('/api/sessions/:sessionId/twitch/request', requestSongRateLimit, (req, res) => {
     const session = getSessionOr404(req, res, readRouteParam(req.params.sessionId))
     if (!session) return
     handleRequestSong(req, res, session)

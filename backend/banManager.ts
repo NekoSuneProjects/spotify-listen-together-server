@@ -32,8 +32,19 @@ export default class BanManager {
     this.load();
   }
 
-  list() {
-    return [...this.bans.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  list(options: { redact?: boolean } = {}) {
+    const bans = [...this.bans.values()]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+
+    if (!options.redact) {
+      return bans;
+    }
+
+    return bans.map((ban) => ({
+      ...ban,
+      ipAddress: maskIpAddress(ban.ipAddress || ""),
+      visitorId: maskVisitorId(ban.visitorId || ""),
+    }));
   }
 
   add(input: Omit<Partial<BanRule>, "id" | "createdAt"> & { reason?: string }) {
@@ -228,4 +239,30 @@ function sanitizeName(value?: string | null) {
 
 function sanitizeReason(value?: string | null) {
   return (value || "Banned by site moderation.").trim().replace(/\s+/g, " ").slice(0, 240);
+}
+
+function maskIpAddress(ipAddress: string) {
+  if (!ipAddress) {
+    return "";
+  }
+
+  if (ipAddress.includes(":")) {
+    const parts = ipAddress.split(":");
+    return `${parts.slice(0, 3).join(":")}:****`;
+  }
+
+  const parts = ipAddress.split(".");
+  if (parts.length === 4) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}.***`;
+  }
+
+  return "masked";
+}
+
+function maskVisitorId(visitorId: string) {
+  if (!visitorId) {
+    return "";
+  }
+
+  return `${visitorId.slice(0, 6)}...`;
 }

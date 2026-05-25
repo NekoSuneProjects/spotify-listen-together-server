@@ -53,6 +53,7 @@ export default class Player {
   ) {
     if (this.loadingTrack === null && Player.isTrackListenable(this.trackUri)) {
       const now = Date.now()
+      milliseconds = this.clampMilliseconds(milliseconds)
       const currentProgress = this.getTrackProgress()
       const pauseChanged = this.paused !== pause
       const driftMs = Math.abs(milliseconds - currentProgress)
@@ -74,7 +75,7 @@ export default class Player {
       this.lastAcceptedProgressUpdateAt = now
 
       if (shouldBroadcast) {
-        this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds], exceptSocketId)
+        this.socketServer.emitToListeners("updateSong", [this.paused, milliseconds, now], exceptSocketId)
         this.updateSongInfo(undefined, { force: true })
       }
 
@@ -95,6 +96,7 @@ export default class Player {
       this.lastAcceptedProgressUpdateAt = this.millisecondsLastUpdate
       this.paused = false
       this.trackUri = trackUri
+      this.loadAtMilliseconds = 0
       this.socketServer.emitToListeners("changeSong", [trackUri], exceptSocketId)
       this.notifyStateChanged()
       this.clearQueueAdvanceTimer()
@@ -134,36 +136,8 @@ export default class Player {
   scheduleQueueAdvance() {
     this.clearQueueAdvanceTimer()
 
-    if (!this.isHostlessQueueMode() || this.paused || !this.trackUri) {
-      return
-    }
-
-    const durationMs = this.songInfo.durationMs || 0
-    if (durationMs <= 0) {
-      return
-    }
-
-    const remainingMs = Math.max(durationMs - this.getTrackProgress(), 0)
-    this.queueAdvanceTimer = setTimeout(() => {
-      this.queueAdvanceTimer = null
-
-      if (!this.isHostlessQueueMode()) {
-        return
-      }
-
-      if (!this.playNextQueuedTrack()) {
-        const fallbackUri = normalizeSpotifyUri(config.fallbackPlaylistUri)
-        if (fallbackUri) {
-          this.socketServer.emitToPlaybackLeader('adminPlayFallback', fallbackUri)
-          return
-        }
-
-        this.paused = true
-        this.milliseconds = durationMs
-        this.millisecondsLastUpdate = Date.now()
-        this.updateSongInfo()
-      }
-    }, remainingMs + 750)
+    // Queue advance is driven by the playback leader's real Spotify songchange.
+    // A server-side duration timer races native auto-advance and causes skips.
   }
 
   playNextQueuedTrack() {
@@ -193,14 +167,31 @@ export default class Player {
     return true
   }
 
+  canMutateQueue(info?: ClientInfo) {
+    return !!info && (info.isHost || this.isPlaybackController(info))
+  }
+
   addToQueue(tracks: ContextTrack[]) {
-    this.queue.push(...tracks);
-    this.socketServer.emitToAll('addToQueue', [...tracks]);
+    const normalizedTracks = this.normalizeQueueTracks(tracks)
+    if (normalizedTracks.length === 0) {
+      return false
+    }
+
+    const availableSlots = Math.max(config.maxQueueLength - this.queue.length, 0)
+    const acceptedTracks = normalizedTracks.slice(0, availableSlots)
+    if (acceptedTracks.length === 0) {
+      return false
+    }
+
+    this.queue.push(...acceptedTracks);
+    this.socketServer.emitToAll('addToQueue', [...acceptedTracks]);
     this.notifyStateChanged()
 
     if (this.isHostlessQueueMode() && !this.trackUri && this.socketServer.getListeners().length > 0) {
       this.playNextQueuedTrack()
     }
+
+    return true
   }
 
   removeFromQueue(tracks: ContextTrack[]) {
@@ -277,11 +268,15 @@ export default class Player {
     Updates
   */
   listenerLoadingSong(info: ClientInfo, newTrackUri: string) {
+    if (info.trackUri !== newTrackUri) {
+      info.trackUriUpdatedAt = Date.now()
+    }
+
     if (this.isPlaybackController(info) && newTrackUri !== this.trackUri) {
       if (this.locked) {
         info.socket.emit("bottomMessage", "Listen together is currently locked!", true)
       } else {
-        if (info.isHost) {
+        if (info.isHost || this.isHostlessQueueMode()) {
           this.shiftQueueTrack(newTrackUri)
         }
         this.changeSong(newTrackUri, info.socket.id)
@@ -309,6 +304,9 @@ export default class Player {
       normalizedSongInfo = songInfoOrName
     }
 
+    if (info.trackUri !== newTrackUri) {
+      info.trackUriUpdatedAt = Date.now()
+    }
     info.trackUri = newTrackUri
     if (this.isPlaybackController(info)) {
       this.updateSongInfo(normalizedSongInfo)
@@ -338,7 +336,11 @@ export default class Player {
     Checks
   */
   checkTrackLoaded() {
-    if (this.socketServer.getListeners().every((info) => info.trackUri === this.trackUri)) {
+    if (
+      this.socketServer.getListeners().every((info) => {
+        return info.trackUri === this.trackUri || Player.isTrackAd(info.trackUri)
+      })
+    ) {
       if (config.debugPlayback) {
         console.log(this.loadAtMilliseconds)
       }
@@ -352,19 +354,35 @@ export default class Player {
   }
 
   checkDesynchronizedListeners() {
-    if (this.loadingTrack === null) {
-      if (this.socketServer.getListeners().some((info) => info.trackUri !== this.trackUri)) {
-        const now = Date.now()
-        if (now - this.lastDesyncResyncAt < config.maxDelay) {
-          return
-        }
+    if (this.loadingTrack !== null || !Player.isTrackListenable(this.trackUri)) {
+      return
+    }
 
-        this.lastDesyncResyncAt = now
-        if (config.debugPlayback) {
-          console.trace()
-        }
-        this.loadAtMilliseconds = this.getTrackProgress()
-        this.changeSong(this.trackUri)
+    const now = Date.now()
+    if (now - this.lastDesyncResyncAt < config.desyncResyncMinIntervalMs) {
+      return
+    }
+
+    const targetMilliseconds = this.clampMilliseconds(this.getTrackProgress())
+    let resynced = false
+
+    for (const info of this.socketServer.getListeners()) {
+      if (info.trackUri === this.trackUri || Player.isTrackAd(info.trackUri)) {
+        continue
+      }
+
+      if (now - info.trackUriUpdatedAt < config.desyncGraceMs) {
+        continue
+      }
+
+      info.socket.emit("changeSong", this.trackUri, targetMilliseconds, this.paused, now)
+      resynced = true
+    }
+
+    if (resynced) {
+      this.lastDesyncResyncAt = now
+      if (config.debugPlayback) {
+        console.trace()
       }
     }
   }
@@ -378,12 +396,10 @@ export default class Player {
 
     let milliseconds = this.loadAtMilliseconds
     this.loadAtMilliseconds = 0
-    setTimeout(() => {
-      if (config.debugPlayback) {
-        console.log(`====== ${milliseconds}  ${this.trackUri}`)
-      }
-      this.updateSong(false, milliseconds, undefined, { force: true })
-    }, 1000)
+    if (config.debugPlayback) {
+      console.log(`====== ${milliseconds}  ${this.trackUri}`)
+    }
+    this.updateSong(false, milliseconds, undefined, { force: true })
   }
 
   lock(lock: boolean) {
@@ -396,7 +412,8 @@ export default class Player {
         // this.updateSong(true, 0)
         this.clearQueueAdvanceTimer()
       } else {
-        this.changeSong(this.socketServer.getHost()?.trackUri || this.trackUri)
+        this.updateSong(this.paused, this.getTrackProgress(), undefined, { force: true })
+        this.checkDesynchronizedListeners()
       }
       this.socketServer.sendListeners()
       this.notifyStateChanged()
@@ -483,6 +500,25 @@ export default class Player {
 
   private notifyStateChanged() {
     this.onStateChanged()
+  }
+
+  private clampMilliseconds(milliseconds: number) {
+    const durationMs = this.songInfo.durationMs || 0
+    const upperBound = durationMs > 0 ? durationMs : Number.MAX_SAFE_INTEGER
+    return Math.min(Math.max(milliseconds || 0, 0), upperBound)
+  }
+
+  private normalizeQueueTracks(tracks: ContextTrack[]) {
+    if (!Array.isArray(tracks)) {
+      return []
+    }
+
+    return tracks
+      .map((track) => ({
+        ...track,
+        uri: normalizeSpotifyUri(track?.uri),
+      }))
+      .filter((track) => !!track.uri)
   }
 }
 

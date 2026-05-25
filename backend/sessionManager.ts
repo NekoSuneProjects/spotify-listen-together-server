@@ -1,5 +1,5 @@
 import { Server, Socket } from "socket.io";
-import { randomBytes } from "crypto";
+import { randomBytes, timingSafeEqual } from "crypto";
 import Player, { ContextTrack } from "./player";
 import SocketServer, { SessionSocketUpdate } from "./socket";
 import { normalizeSpotifyUri } from "./spotifyUri";
@@ -87,7 +87,12 @@ export class ListenSession {
 
   validateHostPassword(password: string) {
     const normalizedPassword = password.trim();
-    return normalizedPassword === this.hostPassword || normalizedPassword === config.hostPassword;
+    return safeCompare(normalizedPassword, this.hostPassword) ||
+      (
+        config.allowGlobalHostPassword &&
+        !!config.hostPassword &&
+        safeCompare(normalizedPassword, config.hostPassword)
+      );
   }
 
   markActive() {
@@ -172,7 +177,7 @@ export class ListenSession {
   serializeForAdmin(origin = "") {
     return {
       ...this.serialize(origin),
-      hostPassword: this.hostPassword,
+      hostPassword: this.hostPassword ? "********" : "",
       listeners: this.socketServer.getListeners().map((info) => serializeClientInfo(info)),
     };
   }
@@ -212,6 +217,10 @@ export default class SessionManager {
 
   createSession(options: CreateSessionOptions = {}) {
     const requestedId = options.id ? sanitizeSessionId(options.id) : "";
+    if (!requestedId && this.sessions.size >= config.maxSessions) {
+      throw new Error("The server has reached its session limit.");
+    }
+
     let id = requestedId || createSessionId();
 
     while (this.sessions.has(id)) {
@@ -340,11 +349,11 @@ export default class SessionManager {
       };
     }
 
-    session.player.addToQueue([normalizedTrack]);
+    const queued = session.player.addToQueue([normalizedTrack]);
     return {
-      accepted: true,
+      accepted: queued,
       hostNotified: false,
-      queued: true,
+      queued,
       queueCount: session.player.getQueue().length,
     };
   }
@@ -486,7 +495,7 @@ function sanitizeSessionId(value: string) {
 }
 
 function sanitizeSessionName(value: string) {
-  return value.trim().replace(/\s+/g, " ").slice(0, 80) || "Listen Together Session";
+  return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 80) || "Listen Together Session";
 }
 
 function sanitizeHostPassword(value?: string | null) {
@@ -501,7 +510,47 @@ function serializeClientInfo(info: ClientInfo) {
     loggedIn: info.loggedIn,
     latency: info.latency,
     trackUri: info.trackUri,
-    ipAddress: info.ipAddress,
-    visitorId: info.visitorId,
+    ipAddress: maskIpAddress(info.ipAddress),
+    visitorId: maskVisitorId(info.visitorId),
   };
+}
+
+function safeCompare(left: string, right: string) {
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function maskIpAddress(ipAddress: string) {
+  if (!ipAddress) {
+    return "";
+  }
+
+  if (ipAddress.includes(":")) {
+    const parts = ipAddress.split(":");
+    return `${parts.slice(0, 3).join(":")}:****`;
+  }
+
+  const parts = ipAddress.split(".");
+  if (parts.length === 4) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}.***`;
+  }
+
+  return "masked";
+}
+
+function maskVisitorId(visitorId: string) {
+  if (!visitorId) {
+    return "";
+  }
+
+  return `${visitorId.slice(0, 6)}...`;
 }

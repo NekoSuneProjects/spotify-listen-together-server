@@ -109,7 +109,7 @@ const Admin: NextPage = () => {
           <div className="text-xs uppercase text-spotify-200">Admin</div>
           <h1 className="mt-3 text-4xl font-black">Moderation Panel</h1>
           <p className="mt-3 max-w-2xl text-sm text-white/60">
-            Uses the server HOST_PASSWORD. Bans are stored server-side and can match IP, browser visitor ID, or display name.
+            Uses the server ADMIN_PASSWORD or API key. Bans are stored server-side and can match IP, browser visitor ID, or display name.
           </p>
         </header>
 

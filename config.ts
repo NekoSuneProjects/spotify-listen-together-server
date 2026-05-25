@@ -27,7 +27,9 @@ function readBoolEnv(name: string, fallback = false) {
 }
 
 export default {
-  hostPassword: readStringEnv("HOST_PASSWORD", "1234"),
+  adminPassword: readStringEnv("ADMIN_PASSWORD"),
+  hostPassword: readStringEnv("HOST_PASSWORD"),
+  allowGlobalHostPassword: readBoolEnv("ALLOW_GLOBAL_HOST_PASSWORD"),
   maxDelay: readIntEnv("MAX_DELAY", 5000),
   apiKey: readStringEnv("API_KEY"),
   fallbackPlaylistUri: readStringEnv("FALLBACK_PLAYLIST_URI"),
@@ -39,6 +41,13 @@ export default {
   socketPingTimeoutMs: Math.max(readIntEnv("SOCKET_PING_TIMEOUT_MS", 20000), 5000),
   progressUpdateMinIntervalMs: Math.max(readIntEnv("PROGRESS_UPDATE_MIN_INTERVAL_MS", 5000), 250),
   progressUpdateDriftToleranceMs: Math.max(readIntEnv("PROGRESS_UPDATE_DRIFT_TOLERANCE_MS", 1500), 0),
+  desyncGraceMs: Math.max(readIntEnv("DESYNC_GRACE_MS", 3000), 0),
+  desyncResyncMinIntervalMs: Math.max(readIntEnv("DESYNC_RESYNC_MIN_INTERVAL_MS", 5000), 1000),
+  maxQueueLength: Math.max(readIntEnv("MAX_QUEUE_LENGTH", 100), 1),
+  maxSessions: Math.max(readIntEnv("MAX_SESSIONS", 250), 1),
+  apiSessionCreateLimit: Math.max(readIntEnv("API_SESSION_CREATE_LIMIT", 20), 1),
+  apiRequestLimit: Math.max(readIntEnv("API_REQUEST_LIMIT", 60), 1),
+  socketQueueEventLimit: Math.max(readIntEnv("SOCKET_QUEUE_EVENT_LIMIT", 30), 1),
   debugSocketEvents: readBoolEnv("DEBUG_SOCKET_EVENTS"),
   debugPlayback: readBoolEnv("DEBUG_PLAYBACK")
 }
